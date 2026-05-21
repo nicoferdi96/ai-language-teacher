@@ -4,6 +4,7 @@
     <content url="file://$MODULE_DIR$">
       <excludeFolder url="file://$MODULE_DIR$/.superpowers" />
       <excludeFolder url="file://$MODULE_DIR$/.venv" />
+      <excludeFolder url="file://$MODULE_DIR$/.claude/worktrees/lessons-db/lessons_planning_workflow/.venv" />
     </content>
     <orderEntry type="jdk" jdkName="uv (ai_language_teacher)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />

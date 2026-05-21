@@ -1,10 +1,11 @@
 import asyncio
 import os
 import uuid
+from typing import cast
 
 from agno.agent import Agent
 from agno.models.openrouter import OpenRouter
-from agno.workflow import StepInput, StepOutput, Workflow
+from agno.workflow import Step, StepInput, StepOutput, Workflow
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
@@ -47,33 +48,16 @@ lesson_planning_agent = Agent(
     markdown=False,
     debug_mode=True,
     output_schema=LessonStructure,
-    # Forcing a response_format for structured output stops this model from
-    # emitting tool calls. With a parser_model set, the main model runs without
-    # a response_format (so it can call get_user_answers and write free text),
-    # and the parser_model then converts that text into LessonStructure.
     parser_model=OpenRouter(id="qwen/qwen3.5-flash-02-23"),
     use_json_mode=True,
 )
 
 
 async def push_to_db(step_input: StepInput) -> StepOutput:
-    """Deterministically persist the generated lesson to Postgres.
-
-    The lesson UUID is generated here, at write time, as required.
-    """
-    lesson = step_input.previous_step_content
-    if not isinstance(lesson, LessonStructure):
-        # The agent step failed or returned no structured output — do not write.
-        return StepOutput(
-            content=f"Skipped DB write: agent produced no lesson "
-            f"({type(lesson).__name__}).",
-            success=False,
-        )
-
+    """Persist the agent's generated lesson to Postgres (UUID generated here)."""
+    lesson = cast(LessonStructure, step_input.previous_step_content)
     # Trust the runtime-injected email, not the value echoed by the model.
-    additional_data = step_input.additional_data or {}
-    user_id = additional_data.get("user_id", lesson.user_id)
-
+    user_id = (step_input.additional_data or {})["user_id"]
     lesson_uuid = uuid.uuid4()
     await PostgresDB().insert_lesson(
         user_id=user_id,
@@ -81,17 +65,14 @@ async def push_to_db(step_input: StepInput) -> StepOutput:
         lesson_script=lesson.lesson_plan,
         duration=lesson.duration,
     )
-    return StepOutput(
-        content=f"Saved lesson {lesson_uuid} for {user_id} "
-        f"({lesson.duration} min)."
-    )
+    return StepOutput(content=f"Saved lesson {lesson_uuid} for {user_id}.")
 
 
 workflow = Workflow(
     name="Lesson Planning Pipeline",
     steps=[
-        lesson_planning_agent,
-        push_to_db,
+        Step(name="LessonPlanningAgent", agent=lesson_planning_agent),
+        Step(name="push_to_db", executor=push_to_db),
     ],
 )
 

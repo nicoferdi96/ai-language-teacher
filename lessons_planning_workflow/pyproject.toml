@@ -16,4 +16,5 @@ dependencies = [
     "pandas-stubs~=2.3.3",
     "python-dotenv==1.0.1",
     "psycopg[binary]>=3.3.4",
+    "pydantic>=2.13.4",
 ]
