@@ -14,10 +14,12 @@ export function EmailForm() {
         placeholder="you@example.com"
         autoComplete="email"
         aria-label="Email address"
+        aria-invalid={error ? "true" : undefined}
+        aria-describedby={error ? "email-error" : undefined}
         className="wizard__input"
       />
       {error ? (
-        <p className="wizard__error" role="alert">
+        <p id="email-error" className="wizard__error" role="alert">
           {error}
         </p>
       ) : null}

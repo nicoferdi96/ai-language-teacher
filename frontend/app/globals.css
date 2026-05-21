@@ -1,12 +1,19 @@
 :root {
   --bg: oklch(0.18 0.012 75);
+  --surface: oklch(0.23 0.014 75);
   --text: oklch(0.94 0.01 85);
-  --text-dim: oklch(0.68 0.015 80);
+  --text-dim: oklch(0.72 0.015 80);
   --accent: oklch(0.78 0.12 55);
-  --accent-ink: oklch(0.2 0.02 60);
+  --accent-hover: oklch(0.84 0.118 58);
+  --accent-ink: oklch(0.21 0.03 60);
   --line: oklch(0.34 0.012 75);
-  --error: oklch(0.72 0.16 35);
+  --line-strong: oklch(0.46 0.014 75);
+  --error: oklch(0.76 0.15 38);
+  --ring: oklch(0.86 0.09 62);
   --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+
+  color-scheme: dark;
 }
 
 * {
@@ -25,25 +32,34 @@ body {
   color: var(--text);
   font-family: var(--font);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
+
+/* Layout ------------------------------------------------------------------ */
 
 .wizard {
   min-height: 100dvh;
   display: flex;
   flex-direction: column;
-  padding: 2rem clamp(1.5rem, 6vw, 6rem);
+  padding: 2.25rem clamp(1.5rem, 6vw, 6rem);
 }
 
 .wizard__bar {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   font-size: 0.75rem;
   letter-spacing: 0.14em;
   color: var(--text-dim);
 }
 
+.wizard__brand {
+  font-weight: 600;
+}
+
 .wizard__counter {
   color: var(--accent);
+  font-variant-numeric: tabular-nums;
 }
 
 .wizard__body {
@@ -52,7 +68,21 @@ body {
   flex-direction: column;
   justify-content: center;
   max-width: 40rem;
+  animation: rise 480ms var(--ease) both;
 }
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(0.6rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Typography -------------------------------------------------------------- */
 
 .wizard__eyebrow {
   font-size: 0.95rem;
@@ -61,19 +91,23 @@ body {
 }
 
 .wizard__question {
-  font-size: clamp(2rem, 6vw, 3.5rem);
+  font-size: clamp(2.2rem, 6vw, 4rem);
   font-weight: 800;
-  line-height: 1.08;
-  letter-spacing: -0.02em;
+  line-height: 1.05;
+  letter-spacing: -0.025em;
+  text-wrap: balance;
 }
 
 .wizard__intro {
   margin-top: 1.25rem;
   font-size: 1.05rem;
   color: var(--text-dim);
-  max-width: 32rem;
-  line-height: 1.5;
+  max-width: 34rem;
+  line-height: 1.55;
+  text-wrap: pretty;
 }
+
+/* Forms ------------------------------------------------------------------- */
 
 .wizard__form {
   margin-top: 2.5rem;
@@ -86,6 +120,7 @@ body {
 .wizard__input {
   width: 100%;
   max-width: 28rem;
+  min-height: 2.75rem;
   background: transparent;
   border: none;
   border-bottom: 2px solid var(--line);
@@ -93,10 +128,19 @@ body {
   font-size: 1.25rem;
   font-family: inherit;
   padding: 0.6rem 0;
+  transition: border-color 180ms var(--ease);
 }
 
-.wizard__input:focus {
-  outline: none;
+.wizard__input::placeholder {
+  color: var(--text-dim);
+  opacity: 0.6;
+}
+
+.wizard__input:hover {
+  border-color: var(--line-strong);
+}
+
+.wizard__input:focus:not([aria-invalid="true"]) {
   border-color: var(--accent);
 }
 
@@ -105,10 +149,15 @@ body {
   border-radius: 0.5rem;
   padding: 0.9rem;
   resize: vertical;
+  line-height: 1.5;
 }
 
 .wizard__input--number {
   max-width: 8rem;
+}
+
+.wizard__input[aria-invalid="true"] {
+  border-color: var(--error);
 }
 
 .wizard__minutes {
@@ -121,17 +170,31 @@ body {
   color: var(--text-dim);
 }
 
+/* Buttons ----------------------------------------------------------------- */
+
 .wizard__submit {
+  min-height: 2.75rem;
   background: var(--accent);
   color: var(--accent-ink);
   border: none;
   font-size: 1rem;
   font-weight: 600;
   font-family: inherit;
-  padding: 0.8rem 1.6rem;
+  padding: 0.7rem 1.6rem;
   border-radius: 0.4rem;
   cursor: pointer;
-  transition: opacity 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition:
+    background-color 180ms var(--ease),
+    transform 120ms var(--ease),
+    opacity 180ms var(--ease);
+}
+
+.wizard__submit:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.wizard__submit:active:not(:disabled) {
+  transform: translateY(1px);
 }
 
 .wizard__submit:disabled {
@@ -142,24 +205,56 @@ body {
 .wizard__choices {
   margin-top: 2.5rem;
   display: flex;
+  flex-wrap: wrap;
   gap: 1rem;
 }
 
 .wizard__choice {
+  min-height: 2.75rem;
   background: transparent;
   color: var(--text);
   border: 2px solid var(--line);
   font-size: 1.1rem;
   font-family: inherit;
-  padding: 0.9rem 2.4rem;
+  padding: 0.8rem 2.4rem;
   border-radius: 0.4rem;
   cursor: pointer;
-  transition: border-color 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition:
+    border-color 180ms var(--ease),
+    background-color 180ms var(--ease),
+    transform 120ms var(--ease);
 }
 
-.wizard__choice:hover {
+.wizard__choice:hover:not(:disabled) {
   border-color: var(--accent);
+  background: var(--surface);
 }
+
+.wizard__choice:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.wizard__choice:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Shared keyboard focus indicator ---------------------------------------- */
+
+/* Suppress the user-agent outline on pointer focus; keyboard focus keeps
+   the styled ring below. */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+.wizard__input:focus-visible,
+.wizard__submit:focus-visible,
+.wizard__choice:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+
+/* Gate (Q1 = No) ---------------------------------------------------------- */
 
 .wizard__gate {
   margin-top: 2.5rem;
@@ -169,9 +264,33 @@ body {
   font-size: 1.1rem;
   color: var(--text-dim);
   margin-bottom: 1.5rem;
+  max-width: 34rem;
+  line-height: 1.55;
 }
 
+/* Error ------------------------------------------------------------------- */
+
 .wizard__error {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
   color: var(--error);
   font-size: 0.95rem;
+}
+
+.wizard__error::before {
+  content: "\26A0";
+  font-size: 0.9em;
+}
+
+/* Respect reduced-motion -------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

@@ -13,10 +13,12 @@ export function Q2Form() {
         rows={4}
         placeholder="Tell me how you'd like to learn..."
         aria-label="How you would like to learn Spanish"
+        aria-invalid={error ? "true" : undefined}
+        aria-describedby={error ? "q2-error" : undefined}
         className="wizard__input wizard__input--area"
       />
       {error ? (
-        <p className="wizard__error" role="alert">
+        <p id="q2-error" className="wizard__error" role="alert">
           {error}
         </p>
       ) : null}
