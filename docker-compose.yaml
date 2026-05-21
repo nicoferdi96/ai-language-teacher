@@ -22,6 +22,7 @@ services:
     build: ./frontend
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      LESSON_PLANNER_URL: ${LESSON_PLANNER_URL}
     ports:
       - "3000:3000"
     depends_on:
