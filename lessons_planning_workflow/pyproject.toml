@@ -17,4 +17,8 @@ dependencies = [
     "python-dotenv==1.0.1",
     "psycopg[binary]>=3.3.4",
     "pydantic>=2.13.4",
+    "fastapi[standard]>=0.136.1",
 ]
+
+[tool.fastapi]
+entrypoint = "app:app"

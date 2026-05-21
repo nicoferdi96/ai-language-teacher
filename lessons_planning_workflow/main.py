@@ -11,11 +11,12 @@ from pydantic import BaseModel, Field
 
 from tools.answers_toolkit import AnswersToolkit
 from utils.postgres_db import PostgresDB
+import json
 
 load_dotenv()
 
-# Email of the learner to plan for. Injected at runtime via the USER_EMAIL env var.
-USER_EMAIL = os.getenv("USER_EMAIL", "nicolacroon@test.com")
+_USER_EMAIL ="nicolacroon@test.com"
+_DURATION = 17
 
 
 class LessonStructure(BaseModel):
@@ -53,11 +54,10 @@ lesson_planning_agent = Agent(
 )
 
 
-async def push_to_db(step_input: StepInput) -> StepOutput:
+async def push_to_db(step_input: StepInput) -> str:
     """Persist the agent's generated lesson to Postgres (UUID generated here)."""
     lesson = cast(LessonStructure, step_input.previous_step_content)
-    # Trust the runtime-injected email, not the value echoed by the model.
-    user_id = (step_input.additional_data or {})["user_id"]
+    user_id = lesson.user_id
     lesson_uuid = uuid.uuid4()
     await PostgresDB().insert_lesson(
         user_id=user_id,
@@ -65,10 +65,17 @@ async def push_to_db(step_input: StepInput) -> StepOutput:
         lesson_script=lesson.lesson_plan,
         duration=lesson.duration,
     )
-    return StepOutput(content=f"Saved lesson {lesson_uuid} for {user_id}.")
+    # return StepOutput(content=f"Saved lesson {lesson_uuid} for {user_id}.")
+    return json.dumps(
+        {
+            "user_id": str(user_id),
+            "lesson_uuid": str(lesson_uuid),
+            "lesson_script": lesson.lesson_plan,
+            "duration": lesson.duration,
+        }
+    )
 
-
-workflow = Workflow(
+lesson_workflow = Workflow(
     name="Lesson Planning Pipeline",
     steps=[
         Step(name="LessonPlanningAgent", agent=lesson_planning_agent),
@@ -76,12 +83,10 @@ workflow = Workflow(
     ],
 )
 
-
 if __name__ == "__main__":
     asyncio.run(
-        workflow.aprint_response(
-            input=f"Create a Spanish lesson for the learner with email {USER_EMAIL}.",
-            additional_data={"user_id": USER_EMAIL},
+        lesson_workflow.aprint_response(
+            input=f"Create a Spanish lesson for the learner with email {_USER_EMAIL} for the required duration.",
             stream=True,
         )
     )
