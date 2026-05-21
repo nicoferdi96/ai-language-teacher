@@ -11,9 +11,11 @@ wheels/
 
 # Superpowers brainstorm artifacts
 .superpowers/
+docs/
 
 # OS
 .DS_Store
 
 # Environment secrets
 .env
+.claude/worktrees/
