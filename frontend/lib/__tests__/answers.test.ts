@@ -1,0 +1,37 @@
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { upsertAnswer } from "../answers";
+import { getPool } from "../db";
+import { QUESTION } from "../questions";
+
+const pool = getPool();
+
+beforeEach(async () => {
+  await pool.query("DELETE FROM answers");
+});
+
+afterAll(async () => {
+  await pool.end();
+});
+
+describe("upsertAnswer", () => {
+  it("inserts a new answer row", async () => {
+    await upsertAnswer("a@b.com", QUESTION.HOW_TO_LEARN, "casual chat");
+    const { rows } = await pool.query(
+      "SELECT answer FROM answers WHERE user_id = $1 AND question_id = $2",
+      ["a@b.com", QUESTION.HOW_TO_LEARN],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].answer).toBe("casual chat");
+  });
+
+  it("overwrites the existing row on conflict instead of duplicating", async () => {
+    await upsertAnswer("a@b.com", QUESTION.LESSON_DURATION, "30");
+    await upsertAnswer("a@b.com", QUESTION.LESSON_DURATION, "45");
+    const { rows } = await pool.query(
+      "SELECT answer FROM answers WHERE user_id = $1 AND question_id = $2",
+      ["a@b.com", QUESTION.LESSON_DURATION],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].answer).toBe("45");
+  });
+});
