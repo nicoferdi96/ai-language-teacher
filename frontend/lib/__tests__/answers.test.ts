@@ -1,19 +1,26 @@
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import type { Pool } from "pg";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { upsertAnswer } from "../answers";
 import { getPool } from "../db";
 import { QUESTION } from "../questions";
 
-const pool = getPool();
+// Integration test: requires a running postgres. Skipped when DATABASE_URL is
+// unset so the plain `npm test` unit run does not fail on a missing database.
+describe.skipIf(!process.env.DATABASE_URL)("upsertAnswer", () => {
+  let pool: Pool;
 
-beforeEach(async () => {
-  await pool.query("DELETE FROM answers");
-});
+  beforeAll(() => {
+    pool = getPool();
+  });
 
-afterAll(async () => {
-  await pool.end();
-});
+  beforeEach(async () => {
+    await pool.query("DELETE FROM answers");
+  });
 
-describe("upsertAnswer", () => {
+  afterAll(async () => {
+    await pool.end();
+  });
+
   it("inserts a new answer row", async () => {
     await upsertAnswer("a@b.com", QUESTION.HOW_TO_LEARN, "casual chat");
     const { rows } = await pool.query(
