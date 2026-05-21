@@ -15,4 +15,5 @@ dependencies = [
     "opentelemetry-sdk>=1.39.1",
     "pandas-stubs~=2.3.3",
     "python-dotenv==1.0.1",
+    "psycopg[binary]>=3.3.4",
 ]
