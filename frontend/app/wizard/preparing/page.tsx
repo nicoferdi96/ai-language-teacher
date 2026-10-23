@@ -16,6 +16,7 @@ export default async function PreparingPage() {
     return (
       <WizardShell
         says="Hmm, that didn't work on my side."
+        mood="thinking"
         question="I couldn't prepare your lesson just yet."
         intro="Your answers are saved. Give it another try in a moment."
       >

@@ -14,6 +14,7 @@ export default async function NativePage() {
   return (
     <WizardShell
       step={3}
+      back="/wizard/language"
       totalSteps={4}
       says="This helps me spot the mistakes your language tends to cause."
       question="What's your native language?"

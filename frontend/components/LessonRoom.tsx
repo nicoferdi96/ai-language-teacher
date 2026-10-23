@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  BarVisualizer,
   LiveKitRoom,
   RoomAudioRenderer,
   useDataChannel,
@@ -8,8 +9,11 @@ import {
   useTranscriptions,
   useVoiceAssistant,
 } from "@livekit/components-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Flag } from "@/components/Flag";
 import { Goals } from "@/components/Goals";
+import { Icon } from "@/components/Icon";
+import { Lumi } from "@/components/Lumi";
 import { Brand } from "@/components/WizardShell";
 import { findTargetLanguage } from "@/lib/languages";
 import type { Objective, VocabularyItem } from "@/lib/planner";
@@ -76,11 +80,12 @@ export function LessonRoom() {
     <main className="shell">
       <header className="topbar">
         <Brand />
-        <div className="topbar__meta">
-          {session ? `${language?.flag ?? ""} ${session.lesson.title}` : "Today's lesson"}
+        <div className="pill">
+          {language ? <Flag code={language.code} /> : null}
+          {session ? session.lesson.title : "Today's lesson"}
         </div>
       </header>
-      <section className="stage stage--wide">
+      <section className="stage stage--wide stage--lesson">
         {phase === "live" && session && progress ? (
           <LiveKitRoom
             serverUrl={session.server_url}
@@ -120,25 +125,39 @@ export function LessonRoom() {
 function StartGate({ phase, error, onStart }: { phase: Phase; error: string | null; onStart: () => void }) {
   const starting = phase === "starting";
   return (
-    <div className="call" style={{ maxWidth: "36rem", margin: "0 auto", width: "100%" }}>
-      <div className="orb orb--lg" data-state={starting ? "connecting" : "idle"} aria-hidden="true">
-        <span className="orb__halo" />
-      </div>
+    <div className="gate">
+      <Lumi state={starting ? "connecting" : phase === "error" ? "thinking" : "happy"} size="xl" />
       <h1 className="title">
         {starting ? "Calling Lumi…" : phase === "error" ? "That didn't connect." : "Ready when you are."}
       </h1>
-      <p className="call__sub">
+      <p className="lead">
         {error ?? "About ten minutes. Speak out loud, mistakes are welcome. You can stop any time."}
       </p>
-      <button type="button" className="btn" onClick={onStart} disabled={starting}>
+      {phase === "error" ? null : (
+        <ul className="gate__tips">
+          <li>
+            <Icon name="headphones" size={18} /> Headphones help
+          </li>
+          <li>
+            <Icon name="mic" size={18} /> Allow the microphone
+          </li>
+          <li>
+            <Icon name="clock" size={18} /> About 10 minutes
+          </li>
+        </ul>
+      )}
+      <button type="button" className="btn btn--lg" onClick={onStart} disabled={starting}>
+        {starting ? <span className="spinner" aria-hidden="true" /> : <Icon name="mic" size={22} />}
         {starting ? "Connecting…" : phase === "error" ? "Try again" : "Start the lesson"}
       </button>
-      <a href="/home" className="hint">Back to home</a>
+      <a href="/home" className="link">
+        Back to home
+      </a>
     </div>
   );
 }
 
-/** The in-room experience: tutor orb, controls, live goals and transcript. */
+/** The in-room experience: Lumi, the voice meter, controls, live goals and transcript. */
 function LiveLesson({
   session,
   progress,
@@ -154,10 +173,11 @@ function LiveLesson({
   onProgress: (progress: Progress) => void;
   onEnd: () => void;
 }) {
-  const { state, agent } = useVoiceAssistant();
+  const { state, agent, audioTrack } = useVoiceAssistant();
   const { localParticipant, isMicrophoneEnabled } = useLocalParticipant();
   const elapsed = useElapsedSeconds();
   const [stuck, setStuck] = useState(false);
+  const cheer = useGoalCheer(progress.objectives);
 
   useEffect(() => {
     localParticipant.setMicrophoneEnabled(true).catch((err) => {
@@ -177,16 +197,35 @@ function LiveLesson({
   }, [agent]);
 
   const done = progress.objectives.filter((objective) => objective.done).length;
+  const total = progress.objectives.length;
   const status = agent ? STATUS[state] ?? "Lumi is here" : stuck ? "Lumi is taking a while…" : "Lumi is joining…";
   const minutes = Math.floor(elapsed / 60);
   const seconds = String(elapsed % 60).padStart(2, "0");
+  const timeShare = Math.min(elapsed / (session.lesson.duration_minutes * 60), 1);
 
   return (
     <div className="lesson">
-      <div className="call">
-        <div className="orb orb--lg" data-state={agent ? state : "connecting"} aria-hidden="true">
-          <span className="orb__halo" />
+      <div className="call" data-state={agent ? state : "connecting"}>
+        <div className="call__time" aria-label={`${minutes} minutes ${seconds} seconds elapsed`}>
+          <span className="call__time-bar" style={{ "--to": timeShare } as CSSProperties} />
+          <span className="timer">
+            {minutes}:{seconds} <span>/ {session.lesson.duration_minutes}:00</span>
+          </span>
         </div>
+        {cheer ? (
+          <p key={cheer.key} className="cheer" role="status">
+            <Icon name="check" size={18} />
+            {cheer.text}
+          </p>
+        ) : null}
+        <Lumi state={agent ? state : "connecting"} size="xl" />
+        <BarVisualizer
+          className="voice-meter"
+          state={state}
+          track={audioTrack}
+          barCount={7}
+          options={{ minHeight: 18, maxHeight: 100 }}
+        />
         <p className="call__status" aria-live="polite">
           {status}
         </p>
@@ -196,43 +235,73 @@ function LiveLesson({
             : micBlocked
               ? "I can't hear you: microphone access is blocked. Allow it in the address bar, then rejoin. You can still listen."
               : !isMicrophoneEnabled
-              ? "Your mic is muted. Unmute to answer."
-              : state === "listening"
-                ? "Your turn. Say it out loud."
-                : "Listen, then answer in your own words."}
+                ? "Your mic is muted. Unmute to answer."
+                : state === "listening"
+                  ? "Your turn. Say it out loud."
+                  : "Listen, then answer in your own words."}
         </p>
         <div className="call__controls">
           <button
             type="button"
-            className="btn btn--quiet btn--icon"
+            className={isMicrophoneEnabled ? "btn btn--quiet btn--icon" : "btn btn--sun btn--icon"}
             aria-pressed={!isMicrophoneEnabled}
             aria-label={isMicrophoneEnabled ? "Mute microphone" : "Unmute microphone"}
             onClick={() => localParticipant.setMicrophoneEnabled(!isMicrophoneEnabled)}
           >
-            <MicIcon muted={!isMicrophoneEnabled} />
+            <Icon name={isMicrophoneEnabled ? "mic" : "micOff"} size={24} />
           </button>
-          <span className="timer" aria-label={`${minutes} minutes ${seconds} seconds elapsed`}>
-            {minutes}:{seconds} / {session.lesson.duration_minutes}:00
-          </span>
           <button type="button" className="btn btn--danger" onClick={onEnd}>
+            <Icon name="end" size={18} />
             End lesson
           </button>
         </div>
       </div>
       <aside className="side">
-        <div className="panel">
-          <p className="panel__title">
-            Goals · {done}/{progress.objectives.length}
-          </p>
+        <section className="panel" aria-labelledby="goals-title">
+          <div className="panel__head">
+            <h2 id="goals-title" className="section-title">
+              Goals
+            </h2>
+            <span className="count">
+              {done}/{total}
+            </span>
+          </div>
+          <span className="meter__track meter__track--thin" aria-hidden="true">
+            <span className="meter__fill" style={{ "--to": total ? done / total : 0 } as CSSProperties} />
+          </span>
           <Goals objectives={progress.objectives} />
-        </div>
-        <div className="panel" style={{ flex: 1, display: "flex", flexDirection: "column" }}>
-          <p className="panel__title">Conversation</p>
+        </section>
+        <section className="panel panel--grow" aria-labelledby="talk-title">
+          <h2 id="talk-title" className="section-title">
+            Conversation
+          </h2>
           <Transcript lang={session.lesson.target_language} />
-        </div>
+        </section>
       </aside>
     </div>
   );
+}
+
+/** Briefly celebrate the most recently ticked objective. */
+function useGoalCheer(objectives: Objective[]): { key: string; text: string } | null {
+  const seen = useRef<Set<string> | null>(null);
+  const [cheer, setCheer] = useState<{ key: string; text: string } | null>(null);
+
+  useEffect(() => {
+    const doneIds = objectives.filter((objective) => objective.done).map((objective) => objective.id);
+    if (seen.current === null) {
+      seen.current = new Set(doneIds);
+      return;
+    }
+    const fresh = objectives.find((objective) => objective.done && !seen.current?.has(objective.id));
+    doneIds.forEach((id) => seen.current?.add(id));
+    if (!fresh) return;
+    setCheer({ key: fresh.id, text: `Goal reached: ${fresh.text}` });
+    const timer = setTimeout(() => setCheer(null), 3200);
+    return () => clearTimeout(timer);
+  }, [objectives]);
+
+  return cheer;
 }
 
 const STATUS: Record<string, string> = {
@@ -284,9 +353,15 @@ function WrapUp({ progress }: { progress: Progress | null }) {
   const done = objectives.filter((objective) => objective.done).length;
   const allDone = objectives.length > 0 && done === objectives.length;
   return (
-    <div className="celebrate" style={{ maxWidth: "38rem" }}>
-      <div className="orb orb--lg" aria-hidden="true" />
-      <p className="eyebrow">{allDone ? "Lesson complete" : "Lesson saved"}</p>
+    <div className="celebrate">
+      <div className="celebrate__hero" data-win={done > 0}>
+        <span className="burst" aria-hidden="true">
+          {Array.from({ length: 10 }, (_, index) => (
+            <span key={index} style={{ "--n": index } as CSSProperties} />
+          ))}
+        </span>
+        <Lumi state="happy" size="xl" />
+      </div>
       <h1>
         {allDone
           ? "You did it. Every goal ticked!"
@@ -301,17 +376,30 @@ function WrapUp({ progress }: { progress: Progress | null }) {
       </p>
       {progress?.summary ? <p className="note">{progress.summary}</p> : null}
       {progress?.new_vocabulary.length ? (
-        <div className="words">
-          {progress.new_vocabulary.map((item) => (
-            <span key={item.term} className="word">
-              {item.term} <span>· {item.meaning}</span>
-            </span>
-          ))}
-        </div>
+        <section className="celebrate__block" aria-labelledby="new-words">
+          <h2 id="new-words" className="section-title">
+            New words
+          </h2>
+          <ul className="words">
+            {progress.new_vocabulary.map((item) => (
+              <li key={item.term} className="word">
+                {item.term} <span>{item.meaning}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
       ) : null}
-      <Goals objectives={objectives} />
-      <a href="/wizard/preparing" className="btn btn--sun">
+      {objectives.length ? (
+        <section className="celebrate__block" aria-labelledby="goal-recap">
+          <h2 id="goal-recap" className="section-title">
+            Today's goals
+          </h2>
+          <Goals objectives={objectives} />
+        </section>
+      ) : null}
+      <a href="/wizard/preparing" className="btn btn--sun btn--lg">
         Back to my path
+        <Icon name="arrow" size={20} className="btn__arrow" />
       </a>
     </div>
   );
@@ -326,15 +414,4 @@ function useElapsedSeconds(): number {
     return () => clearInterval(timer);
   }, []);
   return elapsed;
-}
-
-/** Microphone icon with a slash when muted. */
-function MicIcon({ muted }: { muted: boolean }) {
-  return (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="9" y="3" width="6" height="11" rx="3" />
-      <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
-      {muted ? <path d="M4 4l16 16" /> : null}
-    </svg>
-  );
 }

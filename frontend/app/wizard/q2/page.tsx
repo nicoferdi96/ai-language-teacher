@@ -11,6 +11,7 @@ export default async function Q2Page() {
   return (
     <WizardShell
       step={4}
+      back="/wizard/native"
       totalSteps={4}
       says="Last one. There's no wrong answer."
       question={`How would you like to learn ${name}?`}
