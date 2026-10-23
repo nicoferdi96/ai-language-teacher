@@ -32,13 +32,13 @@ describe.skipIf(!process.env.DATABASE_URL)("upsertAnswer", () => {
   });
 
   it("overwrites the existing row on conflict instead of duplicating", async () => {
-    await upsertAnswer("a@b.com", QUESTION.LESSON_DURATION, "30");
-    await upsertAnswer("a@b.com", QUESTION.LESSON_DURATION, "45");
+    await upsertAnswer("a@b.com", QUESTION.NATIVE_LANGUAGE, "Italian");
+    await upsertAnswer("a@b.com", QUESTION.NATIVE_LANGUAGE, "French");
     const { rows } = await pool.query(
       "SELECT answer FROM answers WHERE user_id = $1 AND question_id = $2",
-      ["a@b.com", QUESTION.LESSON_DURATION],
+      ["a@b.com", QUESTION.NATIVE_LANGUAGE],
     );
     expect(rows).toHaveLength(1);
-    expect(rows[0].answer).toBe("45");
+    expect(rows[0].answer).toBe("French");
   });
 });

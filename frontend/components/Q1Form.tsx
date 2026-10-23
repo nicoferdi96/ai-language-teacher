@@ -8,44 +8,24 @@ export function Q1Form() {
 
   if (state === "declined") {
     return (
-      <div className="wizard__gate">
-        <p className="wizard__gatetext">
-          No rush. Come back whenever you&apos;re ready to begin.
+      <form action={formAction} className="form">
+        <p className="note">
+          <strong>No rush.</strong> Your spot is saved. Come back whenever you have ten minutes.
         </p>
-        <form action={formAction}>
-          <button
-            type="submit"
-            name="choice"
-            value="yes"
-            className="wizard__submit"
-            disabled={pending}
-          >
-            Actually, I&apos;m ready &#8594;
-          </button>
-        </form>
-      </div>
+        <button type="submit" name="choice" value="yes" className="btn" disabled={pending}>
+          Actually, I'm ready
+        </button>
+      </form>
     );
   }
 
   return (
-    <form action={formAction} className="wizard__choices">
-      <button
-        type="submit"
-        name="choice"
-        value="yes"
-        className="wizard__choice"
-        disabled={pending}
-      >
-        Yes
+    <form action={formAction} className="choices">
+      <button type="submit" name="choice" value="yes" className="choice choice--row" disabled={pending}>
+        Yes, let's start
       </button>
-      <button
-        type="submit"
-        name="choice"
-        value="no"
-        className="wizard__choice"
-        disabled={pending}
-      >
-        No
+      <button type="submit" name="choice" value="no" className="choice choice--row" disabled={pending}>
+        Not right now
       </button>
     </form>
   );

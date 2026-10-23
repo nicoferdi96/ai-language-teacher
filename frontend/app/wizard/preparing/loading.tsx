@@ -1,58 +1,36 @@
 import type { CSSProperties } from "react";
 import { WizardShell } from "@/components/WizardShell";
 
-/** Stages narrated while the lesson-planning microservice runs (~30s). */
+/** Stages narrated while the planner reviews progress and writes the lesson. */
 const STAGES = [
-  "Reading how you like to learn",
-  "Choosing today's focus",
-  "Writing your lesson",
-  "Setting the pace",
+  "Checking where we left off",
+  "Picking the next step in your plan",
+  "Writing today's ten minutes",
 ] as const;
 
-/** Seconds each narrated stage holds before the next one takes over. */
-const STAGE_WINDOW_S = 7.5;
-
 /**
- * Suspense fallback for /wizard/preparing. While the page's server component
- * awaits the lesson-planning microservice, this renders a calm, narrated
- * progress view: stages settle one by one as a slow hairline advances. Pure
- * CSS, no client JS. prefers-reduced-motion is honored by the global rule in
- * globals.css, which freezes every stage on its resolved frame.
+ * Suspense fallback for /wizard/preparing: each stage appears in turn and
+ * settles with a check. Pure CSS; reduced motion shows every stage at once.
  */
 export default function PreparingLoading() {
   return (
     <WizardShell
-      eyebrow="On it"
-      question="I'm putting your first lesson together."
-      intro="This takes about half a minute. Stay here, or step away and stretch. Your lesson will be waiting when it's ready."
+      says="Give me a few seconds."
+      question="Getting your lesson ready…"
+      intro="I'm looking at your plan and what you practised last time."
     >
-      <ol className="prepare" aria-label="Building your lesson">
-        {STAGES.map((stage, index) => {
-          const isFinal = index === STAGES.length - 1;
-          return (
-            <li
-              key={stage}
-              className="prepare__stage"
-              data-final={isFinal ? "" : undefined}
-              style={{ "--at": `${index * STAGE_WINDOW_S}s` } as CSSProperties}
-            >
-              <span className="prepare__marker" aria-hidden="true">
-                <svg
-                  className="prepare__check"
-                  viewBox="0 0 12 12"
-                  aria-hidden="true"
-                >
-                  <path d="M2.5 6.5 L5 9 L9.5 3.5" />
-                </svg>
-              </span>
-              <span className="prepare__label">{stage}</span>
-            </li>
-          );
-        })}
+      <ol className="prepare" aria-label="Preparing your lesson">
+        {STAGES.map((stage, index) => (
+          <li key={stage} className="prepare__stage" style={{ "--at": `${index * 4}s` } as CSSProperties}>
+            <span className="prepare__marker" aria-hidden="true">
+              <svg viewBox="0 0 12 12">
+                <path d="M2.5 6.5 L5 9 L9.5 3.5" />
+              </svg>
+            </span>
+            {stage}
+          </li>
+        ))}
       </ol>
-      <div className="prepare__track" aria-hidden="true">
-        <span className="prepare__fill" />
-      </div>
     </WizardShell>
   );
 }
