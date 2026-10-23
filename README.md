@@ -92,6 +92,28 @@ The planner's API (`app.py`): `POST /get_next_lesson/`, `GET /progress/{user_id}
 - If the learner leaves or the call drops, a shutdown callback records the lesson as completed (all goals met) or abandoned, so the planner picks up from there next time.
 - If the learner never joins within 30 seconds the job leaves, and when the session closes the job shuts down so no Gradium session outlives the learner.
 
+### LiveKit components we use
+
+LiveKit handles all real-time audio. This is exactly which parts of it the app uses, and where.
+
+| Layer | Component | Where | What it does here |
+|---|---|---|---|
+| Cloud | **LiveKit Cloud** (rooms and media server) | your project, `LIVEKIT_URL` | Hosts one WebRTC room per lesson, routes audio between browser and tutor, and dispatches the agent job when the learner joins. The free Build plan is enough to run the app. |
+| Server SDK | **`livekit-api`** (Python): `AccessToken`, `VideoGrants`, `RoomConfiguration`, `RoomAgentDispatch` | `voice_agent/api/app.py` | Mints the learner's 30-minute join token for a fresh room. The token's room configuration names the `language-tutor` agent and carries the lesson package as metadata, so joining the room is what starts the tutor (explicit dispatch). |
+| Agents SDK | **`livekit-agents` 1.8**: `AgentServer`, `@server.rtc_session(agent_name=...)`, `JobContext`, `JobProcess` | `voice_agent/tutor/worker.py` | The worker process. Registers with LiveKit Cloud under the name `language-tutor`, prewarms Silero once per process, and runs one job per lesson: connect, wait for the learner, start the session, publish progress, clean up on shutdown. |
+| | `AgentSession` | `worker.py` | Runs the voice pipeline (VAD → turn detection → STT → LLM → TTS), interruptions, and `generate_reply` for the greeting and the time nudges. It also publishes the agent's state and both speakers' transcripts to the room automatically, which is what the UI reads. |
+| | `Agent`, `@function_tool`, `RunContext`, `ToolError` | `voice_agent/tutor/agent.py` | The tutor: system prompt plus the `mark_objective_done`, `lesson_status` and `complete_lesson` tools. `ToolError` sends a refusal back to the model, e.g. when it tries to complete a lesson too early. |
+| | `EndCallTool` (beta) | `agent.py` | Ready-made hang-up tool: speaks a goodbye, then ends the session. |
+| | `agents.cli` | `worker.py`, `Dockerfile` | `download-files` bakes model weights into the image; `start` runs the worker in Docker; `dev` runs it locally with reload. |
+| Plugins | `livekit-plugins-gradium` | `worker.py` | Gradium STT and TTS (your `GRADIUM_API_KEY`). |
+| | `livekit-plugins-openai` (`openai.LLM.with_openrouter`) | `worker.py` | Calls the LLM through OpenRouter's OpenAI-compatible API (your `OPENROUTER_API_KEY`). |
+| | `livekit-plugins-silero` | `worker.py` | Voice activity detection. |
+| | `livekit-plugins-turn-detector` (`MultilingualModel`) | `worker.py` | End-of-turn model, so Lumi waits while a learner pauses mid-sentence to think. |
+| Data | Room data messages (`publish_data`, topic `lesson-progress`) | `worker.py` → `LessonRoom.tsx` | Sends the full lesson state to the browser after every goal tick. |
+| Browser | **`livekit-client` 2** and **`@livekit/components-react` 2.9** | `frontend/components/LessonRoom.tsx` | `LiveKitRoom` (connects with the token), `RoomAudioRenderer` (plays Lumi), `useLocalParticipant` (mic on/off), `useVoiceAssistant` (agent state and audio track), `BarVisualizer` (voice meter), `useTranscriptions` (live transcript), `useDataChannel` (goal ticks). |
+
+Not used: LiveKit Inference (the app brings its own Gradium and OpenRouter keys), LiveKit Cloud agent hosting (the worker runs in your Docker), telephony/SIP, recording/egress and video.
+
 ### How the UI talks to the agents
 
 The browser never calls an agent directly. Every request goes through the Next.js server (server components, server actions and the `/api/session` route), which reads the learner's email from an httpOnly cookie and calls the services over the Compose network. That keeps service URLs off the client and stops a browser from acting as another user. The email is the user id; there is no other auth.
@@ -126,6 +148,20 @@ Supported target languages: English, Spanish, German, French. Italian was droppe
 
 Both the planner and the tutor default to `openai/gpt-5.4-nano` through OpenRouter (minimal reasoning). Override with `PLANNER_MODEL` / `VOICE_LLM_MODEL`; models that accept it get temperature 0.1.
 
+## Can anyone run it?
+
+Yes. Nothing in the code is tied to one person's accounts: clone the repo, create your own (free or pay-as-you-go) accounts with the three providers, put the keys in `.env`, and run `docker compose up`. The Gradium voice IDs in `voice_agent/tutor/languages.py` are standard library voices, not custom ones (the English voice is the Gradium plugin's default), so they should work with any key. If your account rejects one, pick another voice in Gradium Studio and change its ID there.
+
+| Provider | What for | Cost to get started |
+|---|---|---|
+| [LiveKit Cloud](https://cloud.livekit.io) | Real-time audio rooms and agent dispatch | Free Build plan, no credit card. It includes 5,000 WebRTC participant-minutes a month; the learner and the self-hosted tutor both count, so that's roughly 250 ten-minute lessons. |
+| [OpenRouter](https://openrouter.ai) | The LLM for the planner and the tutor | Pay as you go. With the default nano model a plan plus a lesson costs very little; add a few dollars of credit. |
+| [Gradium](https://studio.gradium.ai) | Speech-to-text and text-to-speech | Depends on your Gradium plan. Check its concurrent-session limit: each live lesson holds speech sessions open. |
+
+Everything runs on your machine. The voice worker connects *out* to LiveKit Cloud, so there are no ports to open or webhooks to set up, and it works on a laptop behind a home router.
+
+**Inside the app, "signing up" is just typing an email.** There is no password: the email becomes the user id and is kept in a cookie. Several people can share one running copy (each with their own email, and so their own plan), which is fine on `localhost` or a trusted network. Don't put it on the public internet as is: anyone who can reach it could open someone else's plan by typing their email. Real authentication would be needed first.
+
 ## What you need
 
 - **Docker** with Compose v2 (for the one-command setup), or for running services by hand: **Node.js 22**, **Python 3.13** with [**uv**](https://docs.astral.sh/uv/), and Docker for Postgres.
@@ -143,7 +179,7 @@ cp .env.example .env
 | Variable | Required | Where to get it | Used by |
 |---|---|---|---|
 | `OPENROUTER_API_KEY` | Yes | [openrouter.ai/keys](https://openrouter.ai/keys). Add a little credit; the default nano model is cheap. | planner agents, tutor LLM |
-| `GRADIUM_API_KEY` | Yes | Your Gradium account (speech-to-text and text-to-speech for en, es, de, fr). | voice worker |
+| `GRADIUM_API_KEY` | Yes | [studio.gradium.ai → API keys](https://studio.gradium.ai/platform/api-keys). Covers speech-to-text and text-to-speech for en, es, de, fr. | voice worker |
 | `LIVEKIT_URL` | Yes | [cloud.livekit.io](https://cloud.livekit.io) → your project → Settings. Looks like `wss://<project>.livekit.cloud`. | voice API, voice worker |
 | `LIVEKIT_API_KEY` | Yes | Same project → Settings → API keys → create key. | voice API, voice worker |
 | `LIVEKIT_API_SECRET` | Yes | Shown once when you create the API key. | voice API, voice worker |
@@ -171,7 +207,7 @@ Every service is set to `pull_policy: build`, so `docker compose up` rebuilds th
 - Reset the database (needed after schema changes in `db/init.sql`): `docker compose down -v`
 - Follow one service: `docker compose logs -f voice-worker`
 
-The Gradium account allows 3 concurrent sessions, so only one live lesson at a time is safe.
+How many lessons can run at once depends on your Gradium plan's concurrent-session limit. The account used in development allowed 3 sessions, which is enough for one live lesson at a time.
 
 ## Using the app
 

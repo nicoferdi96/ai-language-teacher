@@ -28,7 +28,7 @@ Flow: frontend → planner (`/get_next_lesson/`, `/progress/{user}`) and → voi
 - **The planner is the only writer** of plans and lessons. The frontend writes onboarding answers only; the worker records progress through the planner's HTTP API.
 - **Target languages are en, es, de, fr only.** Gradium rejects Italian (`voice_agent/scripts/probe_gradium.py`). Keep `frontend/lib/languages.ts`, `lessons_planning_workflow/planner/languages.py` and `voice_agent/tutor/languages.py` in sync.
 - **The tutor speaks only the target language.** Don't write UI copy that promises explanations in the learner's native language.
-- **Gradium allows 3 concurrent sessions**, so only one live lesson at a time is safe.
+- **Gradium concurrency is plan-limited** (the dev account allows 3 sessions), so assume one live lesson at a time.
 - The user id is the email, stored in an httpOnly cookie (`frontend/lib/session.ts`); there is no other auth.
 - The git remote is named `main`, not `origin`: `git push -u main <branch>`.
 
