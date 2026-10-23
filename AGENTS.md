@@ -28,12 +28,6 @@ For STT/TTS models and configuration:
 ### Primary: voice agent work
 - **`livekit-agents`** — the canonical reference for any voice agent code (workflows, handoffs, tools, sessions). It requires tests for every implementation. Use it whenever touching agent code.
 
-### Interactions
-- Always use python-dev skill to work with python code and codebase (ALWAYS)
-- Always use the caveman skill for agent interactions.
-- Always use the superpowers skill for feature developments interactions.
-- Always use the systematic debugging skill from superpowers to debug failing code
-
 ### New features and changes
 Run the superpowers workflow in order:
 1. **`superpowers:brainstorming`** — before any feature/component work, to align on intent and design.
