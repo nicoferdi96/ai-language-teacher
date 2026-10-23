@@ -3,6 +3,8 @@
 import logging
 import os
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
 
@@ -19,8 +21,17 @@ from tutor.worker import AGENT_NAME, PROGRESS_TOPIC
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Voice lesson API")
 planner = PlannerClient()
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    """Close the planner connection pool on shutdown."""
+    yield
+    await planner.aclose()
+
+
+app = FastAPI(title="Voice lesson API", lifespan=lifespan)
 
 
 class SessionRequest(BaseModel):

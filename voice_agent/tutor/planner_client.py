@@ -1,33 +1,62 @@
 """HTTP client for the lesson-planner service, the single owner of lesson records."""
 
-import logging
 import os
 from typing import Any
 
 import httpx
+from pydantic import BaseModel
 
-from tutor.lesson import LessonState
+from tutor.lesson import LessonState, NextLessonResponse
 
-logger = logging.getLogger(__name__)
+PLAN_TIMEOUT_S = 120.0
+"""Building the next lesson may run the planner's agents."""
+WRITE_TIMEOUT_S = 10.0
+"""Progress writes are plain database updates."""
+
+
+class NextLessonRequest(BaseModel):
+    """Body of the planner's next-lesson call."""
+
+    user_id: str
+
+
+class ObjectiveEvidence(BaseModel):
+    """Body of the planner's objective call."""
+
+    evidence: str
 
 
 class PlannerClient:
-    """Reads and writes lesson progress through the planner's REST API."""
+    """Reads and writes lesson progress through the planner's REST API over one connection pool."""
 
-    def __init__(self, base_url: str | None = None, timeout: float = 120.0):
+    def __init__(self, base_url: str | None = None):
         self.base_url = (base_url or os.getenv("PLANNER_BASE_URL", "http://localhost:8000")).rstrip("/")
-        self.timeout = timeout
+        self._client: httpx.AsyncClient | None = None
 
-    async def _post(self, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    @property
+    def client(self) -> httpx.AsyncClient:
+        """The shared HTTP client, created on first use."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(base_url=self.base_url, timeout=WRITE_TIMEOUT_S)
+        return self._client
+
+    async def aclose(self) -> None:
+        """Close the connection pool."""
+        if self._client is not None:
+            await self._client.aclose()
+
+    async def _post(self, path: str, body: BaseModel | None = None, timeout: float = WRITE_TIMEOUT_S) -> Any:
         """POST JSON to the planner and return the decoded response."""
-        async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout) as client:
-            response = await client.post(path, json=payload or {})
-            response.raise_for_status()
-            return response.json()
+        response = await self.client.post(
+            path, json=body.model_dump(mode="json") if body else {}, timeout=timeout
+        )
+        response.raise_for_status()
+        return response.json()
 
-    async def next_lesson(self, user_id: str) -> dict[str, Any]:
-        """Return the learner's next lesson package (built on demand)."""
-        return await self._post("/get_next_lesson/", {"user_id": user_id})
+    async def next_lesson(self, user_id: str) -> NextLessonResponse:
+        """Return the learner's next lesson (built on demand)."""
+        payload = await self._post("/get_next_lesson/", NextLessonRequest(user_id=user_id), timeout=PLAN_TIMEOUT_S)
+        return NextLessonResponse.model_validate(payload)
 
     async def start_lesson(self, lesson_uuid: str) -> None:
         """Mark the lesson as in progress."""
@@ -35,15 +64,8 @@ class PlannerClient:
 
     async def complete_objective(self, lesson_uuid: str, objective_id: str, evidence: str) -> None:
         """Persist one achieved objective."""
-        await self._post(f"/lessons/{lesson_uuid}/objectives/{objective_id}", {"evidence": evidence})
+        await self._post(f"/lessons/{lesson_uuid}/objectives/{objective_id}", ObjectiveEvidence(evidence=evidence))
 
     async def finish_lesson(self, state: LessonState) -> None:
         """Persist the lesson outcome."""
-        await self._post(
-            f"/lessons/{state.package.lesson_uuid}/complete",
-            {
-                "status": state.outcome,
-                "summary": state.summary,
-                "new_vocabulary": [item.model_dump() for item in state.new_vocabulary],
-            },
-        )
+        await self._post(f"/lessons/{state.package.lesson_uuid}/complete", state.finish_request())

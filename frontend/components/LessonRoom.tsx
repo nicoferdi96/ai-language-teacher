@@ -321,7 +321,8 @@ function Transcript({ lang }: { lang: string }) {
       streams
         .filter((stream) => stream.text.trim())
         .map((stream) => ({
-          id: stream.streamInfo.id,
+          // Updates to one line arrive as new streams sharing a segment id; key on it so the bubble grows in place.
+          id: stream.streamInfo.attributes?.["lk.segment_id"] ?? stream.streamInfo.id,
           text: stream.text,
           tutor: !stream.participantInfo.identity.startsWith("learner-"),
         })),

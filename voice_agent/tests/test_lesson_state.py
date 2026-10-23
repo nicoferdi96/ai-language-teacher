@@ -4,7 +4,7 @@ import pytest
 
 from tutor.agent import LessonRecorder
 from tutor.languages import LANGUAGES, get_language
-from tutor.lesson import LessonPackage, LessonState, VocabularyItem
+from tutor.lesson import LessonPackage, LessonState, NextLessonResponse, VocabularyItem
 from tutor.prompt import TutorPrompt
 
 from conftest import make_package
@@ -81,7 +81,7 @@ def test_package_from_planner_payload():
         "learning_method": None,
         "unit": {"title": "Unit"},
     }
-    package = LessonPackage.from_planner(payload)
+    package = LessonPackage.from_planner(NextLessonResponse.model_validate(payload))
 
     assert package.unit_title == "Unit"
     assert package.objectives[0].done
@@ -110,7 +110,7 @@ async def test_recorder_resends_objectives_then_outcome(state):
 
     recorder = LessonRecorder(state, planner, publish)
     state.mark_done("o2", "Soy de Roma")
-    await recorder.objective_done("o2", "Soy de Roma")
+    recorder.objective_done("o2", "Soy de Roma")
     state.finish("abandoned", "left", [VocabularyItem(term="hola", meaning="ciao")])
     await recorder.finished()
 
@@ -119,7 +119,7 @@ async def test_recorder_resends_objectives_then_outcome(state):
         ("objective", "o2", "Soy de Roma"),
         ("finish", "abandoned"),
     ]
-    assert events[-1]["outcome"] == "abandoned"
+    assert events[-1].outcome == "abandoned"
 
 
 async def test_recorder_swallows_planner_failures(state):
@@ -132,4 +132,4 @@ async def test_recorder_swallows_planner_failures(state):
     state.finish("completed", "ok", [])
     await recorder.finished()
 
-    assert events and events[-1]["outcome"] == "completed"
+    assert events and events[-1].outcome == "completed"

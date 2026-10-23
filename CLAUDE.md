@@ -18,7 +18,7 @@ docker compose up
 | `frontend/` | Next.js app (:3000) | Next 15 App Router, React 19, server actions, plain CSS, `pg` |
 | `lessons_planning_workflow/` | lesson planner (:8000) | FastAPI + Agno, Pydantic models, uv |
 | `voice_agent/api/` | voice API (:8100) | FastAPI, mints LiveKit room tokens |
-| `voice_agent/tutor/` | voice worker | LiveKit Agents 1.8, Gradium STT/TTS, OpenRouter LLM |
+| `voice_agent/tutor/` | voice worker | LiveKit Agents 1.8, Gradium STT/TTS, OpenRouter LLM; `session.py` pipeline, `turn.py` turn-taking, `worker.py` entrypoint |
 | `db/init.sql` | Postgres (:5433 on host) | answers, plans, plan units, lessons |
 
 Flow: frontend → planner (`/get_next_lesson/`, `/progress/{user}`) and → voice API (`/api/session` proxies it) → LiveKit dispatches the worker. The worker reports goal ticks over a data channel topic and back to the planner.
@@ -28,6 +28,8 @@ Flow: frontend → planner (`/get_next_lesson/`, `/progress/{user}`) and → voi
 - **The planner is the only writer** of plans and lessons. The frontend writes onboarding answers only; the worker records progress through the planner's HTTP API.
 - **Target languages are en, es, de, fr only.** Gradium rejects Italian (`voice_agent/scripts/probe_gradium.py`). Keep `frontend/lib/languages.ts`, `lessons_planning_workflow/planner/languages.py` and `voice_agent/tutor/languages.py` in sync.
 - **The tutor speaks only the target language.** Don't write UI copy that promises explanations in the learner's native language.
+- **Turn timings live in `voice_agent/tutor/turn.py`**, copied from unmute-core's balanced LiveKit pace (VAD 0.3 s, dynamic endpointing 0.3–1.6 s, adaptive interruption, preemptive generation). Change them only with before/after numbers from the worker's `turn:` log lines.
+- **Gradium interims are one word each**; `tutor/transcript.py` joins them in `TutorAgent.stt_node`. Keep that if you touch the STT node.
 - **Gradium concurrency is plan-limited** (the dev account allows 3 sessions), so assume one live lesson at a time.
 - The user id is the email, stored in an httpOnly cookie (`frontend/lib/session.ts`); there is no other auth.
 - The git remote is named `main`, not `origin`: `git push -u main <branch>`.
