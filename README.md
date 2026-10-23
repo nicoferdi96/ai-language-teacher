@@ -53,24 +53,36 @@ Tip: with the [LiveKit CLI](https://docs.livekit.io/home/cli/) installed, `lk pr
 
 Never commit `.env`; it is already in `.gitignore`.
 
-## Run with Docker (recommended)
+## Run everything
+
+One command starts the whole stack (Postgres, planner, voice API, voice worker, frontend):
 
 ```bash
-cp .env.example .env    # then fill in the keys above
-docker compose up --build
+cp .env.example .env    # once, then fill in the keys above
+docker compose up
 ```
 
-Open <http://localhost:3000>, enter any email, answer the three questions, and press **Start speaking** on the home screen. Allow the microphone when the browser asks.
+Every service is set to `pull_policy: build`, so `docker compose up` rebuilds the images from your current code each time (unchanged layers come from the cache; the first run takes a few minutes). Open <http://localhost:3000> once the frontend logs `Ready`.
 
+- Run in the background: `docker compose up -d`, then `docker compose logs -f`
 - Stop everything: `docker compose down`
 - Reset the database (needed after schema changes in `db/init.sql`): `docker compose down -v`
-- Follow one service's logs: `docker compose logs -f voice-worker`
+- Follow one service: `docker compose logs -f voice-worker`
 
 The Gradium account allows 3 concurrent sessions, so only one live lesson at a time is safe.
 
-## Run locally without Docker
+## Using the app
 
-Useful when you are changing code and want hot reload. Run Postgres in Docker and every other service on your machine, each in its own terminal, all from the repository root.
+1. **Sign in.** Enter any email on the landing page. It is your user id; use the same one to come back to your plan.
+2. **Onboarding.** Answer three quick questions: the language to learn, your native language, and how you like to learn. The back arrow returns to the previous step, and Continue turns on once you pick something.
+3. **Plan.** The planner builds your plan and first lesson (this takes a few seconds; Lumi shows what it is doing).
+4. **Home.** See today's lesson, its goals and your path. Press **Start speaking**.
+5. **Lesson.** Allow the microphone and talk with Lumi for about ten minutes. Lumi only speaks the language you are learning. Goals tick off live as you hit them, and the transcript follows along on the side. Press **End lesson** whenever you like.
+6. **Wrap-up.** You get a summary, the new words and the goals you reached. Next time, the planner picks up from there.
+
+## Run services by hand (optional, for development)
+
+`docker compose up` is all you need to run the app. Running services by hand is only useful when you want hot reload while changing code. Run Postgres in Docker and every other service on your machine, each in its own terminal, all from the repository root.
 
 **1. Postgres** (published on host port 5433):
 
