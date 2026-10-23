@@ -10,41 +10,54 @@ export function NativeForm({ current, exclude }: { current: string | null; exclu
   const [error, formAction, pending] = useActionState(saveNativeLanguage, null);
   const options = NATIVE_LANGUAGES.filter((name) => name !== exclude);
   const isListed = current !== null && options.includes(current);
+  const [picked, setPicked] = useState(isListed ? current : null);
   const [other, setOther] = useState(isListed ? "" : (current ?? ""));
+  const ready = Boolean(picked || other.trim());
   return (
-    <form action={formAction} className="form">
+    <form action={formAction} className="form form--docked">
       <fieldset className="chips" aria-describedby={error ? "native-error" : undefined}>
-        <legend className="goal__state">Native language</legend>
+        <legend className="sr-only">Native language</legend>
         {options.map((name) => (
           <label key={name} className="chip">
             <input
               type="radio"
               name="native"
               value={name}
-              defaultChecked={name === current}
-              onChange={() => setOther("")}
+              checked={picked === name}
+              onChange={() => {
+                setPicked(name);
+                setOther("");
+              }}
             />
             {name}
           </label>
         ))}
       </fieldset>
-      <label className="label" htmlFor="other">
-        Not listed? Type it
-      </label>
-      <input
-        id="other"
-        name="other"
-        className="field"
-        placeholder="e.g. Greek"
-        autoComplete="off"
-        value={other}
-        onChange={(event) => setOther(event.target.value)}
-        aria-invalid={error ? "true" : undefined}
-      />
+      <div className="field-group">
+        <label className="label" htmlFor="other">
+          Not listed? Type it
+        </label>
+        <input
+          id="other"
+          name="other"
+          className="field"
+          placeholder="e.g. Greek"
+          autoComplete="off"
+          value={other}
+          onChange={(event) => {
+            setOther(event.target.value);
+            if (event.target.value.trim()) setPicked(null);
+          }}
+          aria-invalid={error ? "true" : undefined}
+        />
+      </div>
       <FormError id="native-error" message={error} />
-      <button type="submit" className="btn btn--block" disabled={pending}>
-        {pending ? "Saving…" : "Continue"}
-      </button>
+      <div className="dock">
+        <p className="dock__note">Pick one, or type it in the box.</p>
+        <button type="submit" className="btn" disabled={pending || !ready}>
+          {pending ? "Saving…" : "Continue"}
+        </button>
+      </div>
     </form>
   );
 }

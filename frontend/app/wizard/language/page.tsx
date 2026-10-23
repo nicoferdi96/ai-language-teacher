@@ -10,6 +10,7 @@ export default async function LanguagePage() {
   return (
     <WizardShell
       step={2}
+      back="/wizard/q1"
       totalSteps={4}
       says="Pick one and I'll speak only that language with you."
       question="Which language do you want to speak?"

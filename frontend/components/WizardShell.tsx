@@ -1,10 +1,14 @@
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
+import { Icon } from "@/components/Icon";
+import { Lumi, type LumiState } from "@/components/Lumi";
 
 type WizardShellProps = {
   step?: number;
   totalSteps?: number;
+  back?: string;
   says?: string;
   saysSub?: string;
+  mood?: LumiState;
   question: string;
   intro?: string;
   wide?: boolean;
@@ -22,11 +26,11 @@ export function Brand() {
   );
 }
 
-/** Tutor speech bubble next to the small orb. */
-export function Speaker({ says, sub }: { says: string; sub?: string }) {
+/** Tutor speech bubble next to Lumi. */
+export function Speaker({ says, sub, mood = "idle" }: { says: string; sub?: string; mood?: LumiState }) {
   return (
     <div className="speaker">
-      <div className="orb" aria-hidden="true" />
+      <Lumi state={mood} size="md" />
       <p className="speaker__bubble">
         {says}
         {sub ? <small>{sub}</small> : null}
@@ -39,8 +43,10 @@ export function Speaker({ says, sub }: { says: string; sub?: string }) {
 export function WizardShell({
   step,
   totalSteps,
+  back,
   says,
   saysSub,
+  mood,
   question,
   intro,
   wide,
@@ -48,10 +54,17 @@ export function WizardShell({
   children,
 }: WizardShellProps) {
   const progress = step && totalSteps ? step / totalSteps : null;
+  const previous = step && totalSteps ? (step - 1) / totalSteps : 0;
   return (
     <main className="shell">
       <header className="topbar">
-        <Brand />
+        {back ? (
+          <a href={back} className="back" aria-label="Back to the previous question">
+            <Icon name="back" size={26} />
+          </a>
+        ) : (
+          <Brand />
+        )}
         {progress !== null ? (
           <div
             className="progress"
@@ -61,17 +74,20 @@ export function WizardShell({
             aria-valuemax={totalSteps}
             aria-valuenow={step}
           >
-            <div className="progress__fill" style={{ transform: `scaleX(${progress})` }} />
+            <div
+              className="progress__fill"
+              style={{ "--from": previous, "--to": progress } as CSSProperties}
+            />
           </div>
         ) : (
           meta && <div className="topbar__meta">{meta}</div>
         )}
       </header>
       <section className={wide ? "stage stage--wide" : "stage"}>
-        {says ? <Speaker says={says} sub={saysSub} /> : null}
-        <div>
+        {says ? <Speaker says={says} sub={saysSub} mood={mood} /> : null}
+        <div className="stage__head">
           <h1>{question}</h1>
-          {intro ? <p className="lead" style={{ marginTop: "0.6rem" }}>{intro}</p> : null}
+          {intro ? <p className="lead">{intro}</p> : null}
         </div>
         {children}
       </section>

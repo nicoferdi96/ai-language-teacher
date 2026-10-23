@@ -1,3 +1,6 @@
+# `docker compose up` builds every image from the current source and starts
+# the whole stack; `pull_policy: build` rebuilds on each up so code changes
+# are always picked up (unchanged layers come from the build cache).
 services:
   postgres:
     image: postgres:17-alpine
@@ -20,6 +23,7 @@ services:
 
   frontend:
     build: ./frontend
+    pull_policy: build
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       LESSON_PLANNER_URL: http://lesson-planner:8000/get_next_lesson/
@@ -32,6 +36,7 @@ services:
 
   lesson-planner:
     build: ./lessons_planning_workflow
+    pull_policy: build
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -54,6 +59,7 @@ services:
   # LiveKit worker: joins a room when the voice API dispatches "language-tutor".
   voice-worker:
     build: ./voice_agent
+    pull_policy: build
     environment: &voice-env
       LIVEKIT_URL: ${LIVEKIT_URL}
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
@@ -68,6 +74,7 @@ services:
   # FastAPI: prepares the lesson and returns a room token that dispatches the tutor.
   voice-api:
     build: ./voice_agent
+    pull_policy: build
     command: ["uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "8100"]
     environment: *voice-env
     ports:

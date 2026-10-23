@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import { Icon } from "@/components/Icon";
 import { WizardShell } from "@/components/WizardShell";
 
 /** Stages narrated while the planner reviews progress and writes the lesson. */
@@ -16,6 +17,7 @@ export default function PreparingLoading() {
   return (
     <WizardShell
       says="Give me a few seconds."
+      mood="thinking"
       question="Getting your lesson ready…"
       intro="I'm looking at your plan and what you practised last time."
     >
@@ -23,9 +25,7 @@ export default function PreparingLoading() {
         {STAGES.map((stage, index) => (
           <li key={stage} className="prepare__stage" style={{ "--at": `${index * 4}s` } as CSSProperties}>
             <span className="prepare__marker" aria-hidden="true">
-              <svg viewBox="0 0 12 12">
-                <path d="M2.5 6.5 L5 9 L9.5 3.5" />
-              </svg>
+              <Icon name="check" size={16} />
             </span>
             {stage}
           </li>

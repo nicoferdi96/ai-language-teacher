@@ -17,6 +17,7 @@ export default function Error({
   return (
     <WizardShell
       says="Sorry about that."
+      mood="thinking"
       question="Something went wrong."
       intro="I couldn't reach the server. Your progress is safe."
     >
