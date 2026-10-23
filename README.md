@@ -67,15 +67,17 @@ The planner's API (`app.py`): `POST /get_next_lesson/`, `GET /progress/{user_id}
 
 `voice_agent/tutor/` runs on the [LiveKit Agents](https://docs.livekit.io/agents/) SDK as a worker connected to LiveKit Cloud. Each lesson is one job in its own room.
 
-**Pipeline** (`worker.py`, `SessionFactory`): a classic cascaded voice pipeline, chosen so each part can be swapped and the LLM can call tools mid-conversation.
+**Pipeline** (`session.py`, `turn.py`): a classic cascaded voice pipeline, chosen so each part can be swapped and the LLM can call tools mid-conversation. `worker.py` holds only the prewarm and the job entrypoint; `clock.py` is the lesson timer.
 
 | Stage | Model | Notes |
 |---|---|---|
-| Voice activity | Silero VAD | Loaded once per worker process (`prewarm`), weights baked into the image. |
-| Turn detection | LiveKit multilingual turn detector | Decides when the learner has finished speaking, beyond plain silence. |
-| Speech to text | Gradium STT | Set to the lesson's target language. |
+| Voice activity | Silero VAD | Loaded once per worker process (`prewarm`) with a 0.3 s silence floor, weights baked into the image. |
+| Turn detection | LiveKit audio turn detector `v1-mini` | Runs locally on CPU and judges the end of a turn from the audio itself, so it doesn't wait for a transcript. Dynamic endpointing between 0.3 and 1.6 s adapts to how long this learner pauses. |
+| Speech to text | Gradium STT | Set to the lesson's target language. Gradium sends one word per partial transcript; `transcript.py` joins them so the live text shows the whole line. |
 | LLM | `openai/gpt-5.4-nano` via OpenRouter | Minimal reasoning for low latency; models that accept it get temperature 0.1. Override with `VOICE_LLM_MODEL`. |
 | Text to speech | Gradium TTS | One voice per language (`tutor/languages.py`). |
+
+**Turn-taking** (`turn.py`) copies the balanced LiveKit pace from [unmute-core](https://github.com/slng-ai/unmute-core): the VAD floor, the endpointing window, **adaptive interruption** (a short "sí" said over Lumi is heard as an answer and doesn't cut her off; a real barge-in does), **preemptive generation** (the LLM starts on the transcript before the turn is confirmed), and **yield to caller** (a reply that hasn't started playing is dropped if the learner keeps talking, so Lumi answers everything they said). The worker logs each turn's end-of-utterance delay, LLM first token and TTS first audio as `turn:` lines, so tune these values against those numbers.
 
 **The agent** (`agent.py`, `prompt.py`): a single `TutorAgent` whose system prompt is built from the planner's lesson package. It speaks **only the target language**: it rephrases in simpler words instead of translating, keeps turns to one or two short sentences, and uses the native language only to anticipate typical mistakes. Its tools:
 
@@ -101,14 +103,14 @@ LiveKit handles all real-time audio. This is exactly which parts of it the app u
 | Cloud | **LiveKit Cloud** (rooms and media server) | your project, `LIVEKIT_URL` | Hosts one WebRTC room per lesson, routes audio between browser and tutor, and dispatches the agent job when the learner joins. The free Build plan is enough to run the app. |
 | Server SDK | **`livekit-api`** (Python): `AccessToken`, `VideoGrants`, `RoomConfiguration`, `RoomAgentDispatch` | `voice_agent/api/app.py` | Mints the learner's 30-minute join token for a fresh room. The token's room configuration names the `language-tutor` agent and carries the lesson package as metadata, so joining the room is what starts the tutor (explicit dispatch). |
 | Agents SDK | **`livekit-agents` 1.8**: `AgentServer`, `@server.rtc_session(agent_name=...)`, `JobContext`, `JobProcess` | `voice_agent/tutor/worker.py` | The worker process. Registers with LiveKit Cloud under the name `language-tutor`, prewarms Silero once per process, and runs one job per lesson: connect, wait for the learner, start the session, publish progress, clean up on shutdown. |
-| | `AgentSession` | `worker.py` | Runs the voice pipeline (VAD → turn detection → STT → LLM → TTS), interruptions, and `generate_reply` for the greeting and the time nudges. It also publishes the agent's state and both speakers' transcripts to the room automatically, which is what the UI reads. |
+| | `AgentSession`, `TurnHandlingOptions` | `session.py`, `turn.py` | Runs the voice pipeline (VAD → turn detection → STT → LLM → TTS), interruptions, and `generate_reply` for the greeting and the time nudges. It also publishes the agent's state and both speakers' transcripts to the room automatically, which is what the UI reads. |
 | | `Agent`, `@function_tool`, `RunContext`, `ToolError` | `voice_agent/tutor/agent.py` | The tutor: system prompt plus the `mark_objective_done`, `lesson_status` and `complete_lesson` tools. `ToolError` sends a refusal back to the model, e.g. when it tries to complete a lesson too early. |
 | | `EndCallTool` (beta) | `agent.py` | Ready-made hang-up tool: speaks a goodbye, then ends the session. |
 | | `agents.cli` | `worker.py`, `Dockerfile` | `download-files` bakes model weights into the image; `start` runs the worker in Docker; `dev` runs it locally with reload. |
-| Plugins | `livekit-plugins-gradium` | `worker.py` | Gradium STT and TTS (your `GRADIUM_API_KEY`). |
-| | `livekit-plugins-openai` (`openai.LLM.with_openrouter`) | `worker.py` | Calls the LLM through OpenRouter's OpenAI-compatible API (your `OPENROUTER_API_KEY`). |
-| | `livekit-plugins-silero` | `worker.py` | Voice activity detection. |
-| | `livekit-plugins-turn-detector` (`MultilingualModel`) | `worker.py` | End-of-turn model, so Lumi waits while a learner pauses mid-sentence to think. |
+| Plugins | `livekit-plugins-gradium` | `session.py` | Gradium STT and TTS (your `GRADIUM_API_KEY`). |
+| | `livekit-plugins-openai` (`openai.LLM.with_openrouter`) | `session.py` | Calls the LLM through OpenRouter's OpenAI-compatible API (your `OPENROUTER_API_KEY`). |
+| | `livekit-plugins-silero` | `session.py` | Voice activity detection. |
+| | `inference.TurnDetector(version="v1-mini")` and adaptive interruption | `turn.py` | Audio end-of-turn model, so Lumi waits while a learner pauses mid-sentence to think but answers quickly once they're done. The interruption model needs your LiveKit keys and is free within the development allowance. |
 | Data | Room data messages (`publish_data`, topic `lesson-progress`) | `worker.py` → `LessonRoom.tsx` | Sends the full lesson state to the browser after every goal tick. |
 | Browser | **`livekit-client` 2** and **`@livekit/components-react` 2.9** | `frontend/components/LessonRoom.tsx` | `LiveKitRoom` (connects with the token), `RoomAudioRenderer` (plays Lumi), `useLocalParticipant` (mic on/off), `useVoiceAssistant` (agent state and audio track), `BarVisualizer` (voice meter), `useTranscriptions` (live transcript), `useDataChannel` (goal ticks). |
 
@@ -234,7 +236,7 @@ docker compose up -d postgres
 cd lessons_planning_workflow && uv sync && uv run uvicorn app:app --reload --port 8000
 ```
 
-**3. Voice worker** (first run downloads the VAD and turn-detector models):
+**3. Voice worker** (first run downloads the VAD model):
 
 ```bash
 cd voice_agent && uv sync && uv run python -m tutor.worker download-files && uv run python -m tutor.worker dev

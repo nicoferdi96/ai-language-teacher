@@ -4,7 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
     "fastapi[standard]>=0.136",
-    "livekit-agents[gradium,openai,silero,turn-detector]~=1.8",
+    "livekit-agents[gradium,openai,silero]~=1.8",
     "livekit-api>=1.2",
     "psycopg[binary]>=3.3",
     "pydantic>=2.13",

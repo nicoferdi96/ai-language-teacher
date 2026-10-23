@@ -1,63 +1,72 @@
 """The voice tutor agent and its lesson-tracking tools."""
 
+import asyncio
 import logging
-from typing import Any, Awaitable, Callable
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
+from typing import Any
 
-from livekit.agents import Agent, RunContext, ToolError, function_tool
+from livekit import rtc
+from livekit.agents import Agent, ModelSettings, RunContext, ToolError, function_tool, stt
 from livekit.agents.beta.tools import EndCallTool
 
 from tutor.languages import LanguageProfile
-from tutor.lesson import LessonState, VocabularyItem
+from tutor.lesson import LessonState, ProgressEvent, VocabularyItem
 from tutor.planner_client import PlannerClient
 from tutor.prompt import TutorPrompt
+from tutor.transcript import InterimJoiner
 
 logger = logging.getLogger(__name__)
 
-Publisher = Callable[[dict[str, Any]], Awaitable[None]]
+Publisher = Callable[[ProgressEvent], Awaitable[None]]
 
 
-async def _no_publish(_: dict[str, Any]) -> None:
+async def _no_publish(_: ProgressEvent) -> None:
     """Default publisher used outside a room (tests, console)."""
 
 
 class LessonRecorder:
     """Persists lesson progress to the planner and mirrors it to the browser.
 
-    Planner and publish failures are logged, never raised to the model: the
-    in-session state stays authoritative and is re-sent in full when the lesson
-    finishes, and the room may already be closed when the final event is sent.
+    Objective writes run in the background so a tool returns to the model at once;
+    ``finished`` waits for them, then re-sends every achieved objective and the outcome.
+    Planner and publish failures are logged, never raised to the model: the in-session
+    state stays authoritative, and the room may already be closed for the final event.
     """
 
     def __init__(self, state: LessonState, planner: PlannerClient | None, publish: Publisher):
         self.state = state
         self.planner = planner
         self.publish = publish
+        self._pending: set[asyncio.Task[None]] = set()
 
-    async def objective_done(self, objective_id: str, evidence: str) -> None:
-        """Persist and publish one achieved objective."""
-        await self._safely(self.planner and self.planner.complete_objective(
-            self.state.package.lesson_uuid, objective_id, evidence
-        ))
-        await self._safely(self.publish(self.state.progress_event()))
+    def objective_done(self, objective_id: str, evidence: str) -> None:
+        """Persist and publish one achieved objective without blocking the caller."""
+        task = asyncio.create_task(self._record_objective(objective_id, evidence))
+        self._pending.add(task)
+        task.add_done_callback(self._pending.discard)
 
     async def finished(self) -> None:
-        """Re-send every achieved objective, then the outcome, then publish."""
+        """Wait for pending writes, re-send each achieved objective and the outcome, then publish."""
+        await asyncio.gather(*self._pending)
         if self.planner is not None:
-            [
-                await self._safely(self.planner.complete_objective(
-                    self.state.package.lesson_uuid, objective.id, objective.evidence or ""
-                ))
-                for objective in self.state.objectives
-                if objective.done
-            ]
+            for objective in self.state.objectives:
+                if objective.done:
+                    await self._safely(self.planner.complete_objective(
+                        self.state.package.lesson_uuid, objective.id, objective.evidence or ""
+                    ))
             await self._safely(self.planner.finish_lesson(self.state))
         await self._safely(self.publish(self.state.progress_event()))
 
+    async def _record_objective(self, objective_id: str, evidence: str) -> None:
+        if self.planner is not None:
+            await self._safely(self.planner.complete_objective(
+                self.state.package.lesson_uuid, objective_id, evidence
+            ))
+        await self._safely(self.publish(self.state.progress_event()))
+
     @staticmethod
-    async def _safely(call: Awaitable[None] | None) -> None:
+    async def _safely(call: Awaitable[None]) -> None:
         """Await a planner or publish call, logging instead of raising on failure."""
-        if call is None:
-            return
         try:
             await call
         except Exception:
@@ -94,6 +103,14 @@ class TutorAgent(Agent):
             "sentence what today's lesson is about, and ask one easy personal question."
         )
 
+    async def stt_node(
+        self, audio: AsyncIterable[rtc.AudioFrame], model_settings: ModelSettings
+    ) -> AsyncIterator[stt.SpeechEvent]:
+        """Default STT, with Gradium's per-word interims joined into the line so far."""
+        joiner = InterimJoiner()
+        async for event in Agent.default.stt_node(self, audio, model_settings):
+            yield joiner.push(event)
+
     @function_tool()
     async def mark_objective_done(self, context: RunContext, objective_id: str, evidence: str) -> dict[str, Any]:
         """Mark a lesson objective as achieved.
@@ -111,13 +128,13 @@ class TutorAgent(Agent):
             raise ToolError(
                 f"Unknown objective id {objective_id!r}. Valid ids: {[o.id for o in self.state.objectives]}"
             )
-        await self.recorder.objective_done(objective_id, evidence)
-        return self.state.status_facts()
+        self.recorder.objective_done(objective_id, evidence)
+        return self.state.status_facts().model_dump()
 
     @function_tool()
     async def lesson_status(self, context: RunContext) -> dict[str, Any]:
         """Return the remaining objectives and the minutes elapsed and left."""
-        return self.state.status_facts()
+        return self.state.status_facts().model_dump()
 
     @function_tool()
     async def complete_lesson(
@@ -135,7 +152,7 @@ class TutorAgent(Agent):
         if not self.state.can_complete():
             raise ToolError(
                 "Lesson not finished yet: keep teaching. "
-                f"Status: {self.state.status_facts()}"
+                f"Status: {self.state.status_facts().model_dump_json()}"
             )
         if self.state.finish("completed", summary, new_vocabulary):
             await self.recorder.finished()

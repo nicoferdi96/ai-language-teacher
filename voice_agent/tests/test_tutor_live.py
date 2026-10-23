@@ -10,7 +10,7 @@ from livekit.plugins import openai
 from tutor.agent import TutorAgent
 from tutor.languages import get_language
 from tutor.lesson import LessonState
-from tutor.worker import SessionFactory
+from tutor.session import build_llm
 
 from conftest import make_package
 
@@ -26,7 +26,7 @@ async def tutor_session(language: str = "es", history: list[tuple[str, str]] | N
     agent = TutorAgent(get_language(language), state)
     async with (
         openai.LLM.with_openrouter(model=JUDGE_MODEL) as judge,
-        SessionFactory.llm() as llm,
+        build_llm() as llm,
         AgentSession(llm=llm) as session,
     ):
         await session.start(agent)
