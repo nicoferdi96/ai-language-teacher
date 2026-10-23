@@ -202,6 +202,13 @@ body {
   cursor: default;
 }
 
+/* The retry control on the preparing error state is a link, not a button. */
+a.wizard__submit {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+
 .wizard__choices {
   margin-top: 2.5rem;
   display: flex;
@@ -281,6 +288,154 @@ body {
 .wizard__error::before {
   content: "\26A0";
   font-size: 0.9em;
+}
+
+/* Preparing screen (loading) --------------------------------------------- */
+
+.prepare {
+  list-style: none;
+  margin-top: 2.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.95rem;
+}
+
+.prepare__stage {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  font-size: 1.05rem;
+  color: var(--text);
+  /* Pending until --at; the global reduced-motion rule freezes it resolved. */
+  opacity: 0.4;
+  animation: prepare-stage 7.5s var(--ease) var(--at) both;
+}
+
+.prepare__stage[data-final] {
+  animation-name: prepare-stage-final;
+}
+
+@keyframes prepare-stage {
+  0% {
+    opacity: 0.4;
+  }
+  12%,
+  88% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.62;
+  }
+}
+
+@keyframes prepare-stage-final {
+  0% {
+    opacity: 0.4;
+  }
+  12%,
+  100% {
+    opacity: 1;
+  }
+}
+
+.prepare__marker {
+  flex: none;
+  width: 1.2rem;
+  height: 1.2rem;
+  display: inline-grid;
+  place-items: center;
+  border: 1.5px solid var(--line-strong);
+  border-radius: 50%;
+  animation: prepare-marker 7.5s var(--ease) var(--at) both;
+}
+
+.prepare__stage[data-final] .prepare__marker {
+  animation-name: prepare-marker-final;
+}
+
+@keyframes prepare-marker {
+  0% {
+    border-color: var(--line-strong);
+    background: transparent;
+  }
+  12%,
+  88% {
+    border-color: var(--accent);
+    background: transparent;
+  }
+  100% {
+    border-color: var(--accent);
+    background: var(--accent);
+  }
+}
+
+@keyframes prepare-marker-final {
+  0% {
+    border-color: var(--line-strong);
+  }
+  12%,
+  100% {
+    border-color: var(--accent);
+  }
+}
+
+.prepare__check {
+  width: 0.72rem;
+  height: 0.72rem;
+  opacity: 0;
+  animation: prepare-check 7.5s var(--ease) var(--at) both;
+}
+
+.prepare__stage[data-final] .prepare__check {
+  animation: none;
+}
+
+.prepare__check path {
+  fill: none;
+  stroke: var(--accent-ink);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+@keyframes prepare-check {
+  0%,
+  86% {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.prepare__track {
+  margin-top: 2.75rem;
+  width: 100%;
+  max-width: 28rem;
+  height: 2px;
+  background: var(--line);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.prepare__fill {
+  display: block;
+  height: 100%;
+  width: 100%;
+  background: var(--accent);
+  border-radius: inherit;
+  /* scaleX, never width, so the hairline never triggers layout. */
+  transform-origin: left center;
+  transform: scaleX(0.06);
+  animation: prepare-fill 30s var(--ease) both;
+}
+
+@keyframes prepare-fill {
+  to {
+    transform: scaleX(0.92);
+  }
 }
 
 /* Respect reduced-motion -------------------------------------------------- */

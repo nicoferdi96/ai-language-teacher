@@ -29,5 +29,26 @@ services:
       postgres:
         condition: service_healthy
 
+  lesson-planner:
+    build: ./lessons_planning_workflow
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      # Reach postgres over the compose network, overriding the host-side
+      # localhost:5433 defaults baked into db_config.py.
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      TAVILY_API_KEY: ${TAVILY_API_KEY}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY}
+      LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   pgdata:

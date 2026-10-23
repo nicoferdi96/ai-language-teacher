@@ -58,7 +58,10 @@ export async function saveLearningGoal(
   redirect("/wizard/q3");
 }
 
-/** Q3: persist the lesson duration in minutes, then finish. */
+/**
+ * Q3: persist the lesson duration in minutes, then send the new user to the
+ * preparing screen, which asks the microservice to build their first lesson.
+ */
 export async function saveLessonDuration(
   _prev: string | null,
   formData: FormData,
@@ -69,46 +72,17 @@ export async function saveLessonDuration(
     return "Enter a whole number of minutes greater than zero.";
   }
   await upsertAnswer(userId, QUESTION.LESSON_DURATION, String(minutes));
-  redirect("/wizard/done");
+  redirect("/wizard/preparing");
 }
 
-/** Shown when the lesson-planning microservice cannot be reached. */
-const UNREACHABLE_PLANNER =
-  "I couldn't reach the lesson planner just now. Give it another try in a moment.";
-
 /**
- * Returning-user action: ask the lesson-planning microservice to build the next
- * lesson for the current user, then show the "preparing" screen. Returns a
- * gentle error message string when the planner cannot be reached.
+ * Returning-user action: send the user to the preparing screen. That screen
+ * owns the call to the lesson-planning microservice (see preparing/page.tsx).
  */
 export async function planNextLesson(
   _prev: string | null,
   _formData: FormData,
 ): Promise<string | null> {
-  const userId = await requireUserEmail();
-
-  const plannerUrl = process.env.LESSON_PLANNER_URL;
-  if (!plannerUrl) {
-    console.error("LESSON_PLANNER_URL is not set; cannot request a lesson plan.");
-    return UNREACHABLE_PLANNER;
-  }
-
-  try {
-    const res = await fetch(plannerUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user_id: userId }),
-      cache: "no-store",
-      signal: AbortSignal.timeout(5000),
-    });
-    if (!res.ok) {
-      console.error(`Lesson planner responded with HTTP ${res.status}.`);
-      return UNREACHABLE_PLANNER;
-    }
-  } catch (error) {
-    console.error("Lesson planner request failed:", error);
-    return UNREACHABLE_PLANNER;
-  }
-
+  await requireUserEmail();
   redirect("/wizard/preparing");
 }
