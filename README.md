@@ -4,25 +4,127 @@ Ten-minute spoken lessons with a voice tutor, planned around each learner.
 
 A learner signs in with an email, answers three onboarding questions (target language, native language, how they like to learn), and gets a long-term plan. Every visit the planner prepares the next ~10-minute lesson with checkable goals, and the learner talks it through live with Lumi, a voice tutor that ticks goals off as they go.
 
-## How it fits together
+## Architecture
 
-| Service | Folder | Port | What it does |
-|---|---|---|---|
-| `frontend` | `frontend/` | 3000 | Next.js app: onboarding, home with the plan path, live lesson UI. |
-| `lesson-planner` | `lessons_planning_workflow/` | 8000 | FastAPI + Agno workflow. Builds the learning plan once, and on every login reviews progress and prepares the next lesson with checkable objectives. Single owner of plan/lesson writes. |
-| `voice-api` | `voice_agent/api/` | 8100 | FastAPI: fetches the next lesson and returns a LiveKit room token that dispatches the tutor. |
-| `voice-worker` | `voice_agent/tutor/` | – | LiveKit agent "Lumi": Gradium STT/TTS, OpenRouter LLM. Speaks only the target language, ticks objectives with tools, ends via `EndCallTool`. |
-| `postgres` | `db/init.sql` | 5433 (host) | Answers, learning plans, plan units, lessons. |
+Lumi is one product made of several small apps, each in the runtime that suits it, wired together by Docker Compose.
+
+| Service | Folder | Port | Runtime | Job |
+|---|---|---|---|---|
+| `frontend` | `frontend/` | 3000 | Node, Next.js 15 | Onboarding, home with the plan path, live lesson UI. |
+| `lesson-planner` | `lessons_planning_workflow/` | 8000 | Python, FastAPI + Agno | Builds the learning plan and prepares each lesson. Only writer of plans and lessons. |
+| `voice-api` | `voice_agent/api/` | 8100 | Python, FastAPI | Gets the next lesson and mints a LiveKit room token that dispatches the tutor. |
+| `voice-worker` | `voice_agent/tutor/` | – | Python, LiveKit Agents | "Lumi", the real-time voice tutor that runs the lesson. |
+| `postgres` | `db/init.sql` | 5433 on host | Postgres 17 | Onboarding answers, plans, plan units, lessons. |
+
+### Why several services in one Compose file
+
+- **Different workloads.** The planner makes slow LLM calls (up to two minutes on the first plan), the voice API answers in milliseconds, and the voice worker holds long-lived audio sessions with models loaded in memory. Keeping them apart means a slow plan never blocks a live lesson, and each can be restarted, scaled or deployed on its own.
+- **The right language for each job.** The UI is TypeScript/React; the AI services are Python, where Agno and the LiveKit Agents SDK live. `voice-api` and `voice-worker` share one image (`voice_agent/`) with different start commands.
+- **One owner for each piece of data.** The frontend writes only onboarding answers. Everything about plans and lessons goes through the planner's HTTP API, including progress from the voice worker. That keeps the rules (which unit is current, when a unit counts as done) in one place.
+- **One command to run it.** Compose puts every service on one network, reads every key from one `.env`, starts Postgres first and waits for its health check, and with `pull_policy: build` rebuilds each image from source on `docker compose up`.
+
+### How a lesson flows
 
 ```
-browser ──► frontend ──► lesson-planner ──► postgres
-               │              ▲
-               └──► voice-api ┘ ──► LiveKit Cloud ◄── voice-worker (Gradium + OpenRouter)
+                 ┌──────────────── Docker Compose network ────────────────┐
+ browser ──────► │ frontend ──(1)──► lesson-planner ◄──(5)── voice-worker │
+    ▲  │         │    │                 │   ▲                     ▲      │
+    │  │         │   (2)               SQL  │(3)                  │      │
+    │  │         │    ▼                 ▼   │                     │      │
+    │  │         │ voice-api ───────► postgres                    │      │
+    │  │         └────│───────────────────────────────────────────│──────┘
+    │  │             (3) token + dispatch                         │
+    │  └───────(4) audio + data ───► LiveKit Cloud ◄──────────────┘
+    └──────────── goal ticks ◄──────────┘
 ```
+
+1. After onboarding, and on every return visit, the frontend asks the planner to prepare the next lesson (`POST /get_next_lesson/`) and then reads the plan for the home screen (`GET /progress/{user}`).
+2. **Start speaking** calls the frontend's `/api/session`, which forwards to `voice-api` (`POST /sessions`).
+3. `voice-api` fetches the lesson package from the planner (reusing the open lesson) and returns a LiveKit token for a fresh room. The token's room configuration dispatches the `language-tutor` agent with the lesson package as job metadata.
+4. The browser joins the room with the LiveKit React SDK. LiveKit Cloud starts a job on the voice worker, which talks with the learner and streams goal ticks back over a data channel (`lesson-progress` topic).
+5. The worker records progress in the planner as it happens: lesson started, each objective met (with the learner's words as evidence), and the final outcome with a summary and new words.
+
+### The lesson planner: an Agno agentic workflow
+
+`lessons_planning_workflow/planner/workflow.py` is an [Agno](https://docs.agno.com) `Workflow` with three steps:
+
+| Step | Who does it | What happens |
+|---|---|---|
+| `review_progress` | code | Loads a snapshot from Postgres: the learner's answers, their plan, the last lessons, and any lesson still open. |
+| `ensure_plan` | `CurriculumAgent` | Only when the learner has no plan yet: designs a long-term plan and stores it. |
+| `prepare_lesson` | `LessonAgent` | Reuses an open lesson if there is one; otherwise designs the next lesson and stores it. |
+
+The two agents (`planner/agents.py`) are Agno `Agent`s with **structured output**: each has a Pydantic `output_schema`, gets a JSON prompt, and returns a validated model rather than free text.
+
+- **CurriculumAgent** → `LearningPlanDraft`. Infers a starting CEFR level (A1–C2) from how the learner describes themselves, then writes 8–12 ordered units (vocabulary, grammar or conversation), each teachable in one or two 10-minute spoken lessons and weighted to the learner's goal and preferred style.
+- **LessonAgent** → `LessonBriefDraft`. Sees the profile, the plan with unit statuses, the focus unit and the recent lessons (objectives met and unmet, new words, summaries). It writes the next lesson: 3–5 objectives small enough to check from what the learner *says*, 5–8 vocabulary items with meanings in the learner's native language, up to 4 recap terms, and 120–250 words of guidance for the tutor, including mistakes speakers of the learner's native language typically make. Unmet objectives from an unfinished lesson are carried forward first.
+
+Design choice: **the model decides content, code owns state.** The agents never touch the database. Code picks the focus unit, merges recap terms, reuses an open lesson so a page refresh never creates a second one, holds a per-learner lock against concurrent requests, and marks a unit done only when a lesson on it was completed with every objective met.
+
+The planner's API (`app.py`): `POST /get_next_lesson/`, `GET /progress/{user_id}`, `GET /lessons/{id}`, `POST /lessons/{id}/start`, `POST /lessons/{id}/objectives/{objective_id}`, `POST /lessons/{id}/complete`.
+
+### The voice tutor: a LiveKit agent
+
+`voice_agent/tutor/` runs on the [LiveKit Agents](https://docs.livekit.io/agents/) SDK as a worker connected to LiveKit Cloud. Each lesson is one job in its own room.
+
+**Pipeline** (`worker.py`, `SessionFactory`): a classic cascaded voice pipeline, chosen so each part can be swapped and the LLM can call tools mid-conversation.
+
+| Stage | Model | Notes |
+|---|---|---|
+| Voice activity | Silero VAD | Loaded once per worker process (`prewarm`), weights baked into the image. |
+| Turn detection | LiveKit multilingual turn detector | Decides when the learner has finished speaking, beyond plain silence. |
+| Speech to text | Gradium STT | Set to the lesson's target language. |
+| LLM | `openai/gpt-5.4-nano` via OpenRouter | Minimal reasoning for low latency; models that accept it get temperature 0.1. Override with `VOICE_LLM_MODEL`. |
+| Text to speech | Gradium TTS | One voice per language (`tutor/languages.py`). |
+
+**The agent** (`agent.py`, `prompt.py`): a single `TutorAgent` whose system prompt is built from the planner's lesson package. It speaks **only the target language**: it rephrases in simpler words instead of translating, keeps turns to one or two short sentences, and uses the native language only to anticipate typical mistakes. Its tools:
+
+- `mark_objective_done(objective_id, evidence)`: allowed only once the learner has produced the target language themselves, not when they just said "yes" or the tutor said it for them.
+- `lesson_status()`: remaining objectives and minutes left.
+- `complete_lesson(summary, new_vocabulary)`: refused by code until every objective is done or time is up.
+- `end_call` (LiveKit's `EndCallTool`): says goodbye in the target language and hangs up.
+
+**Code-owned guardrails** around the model:
+
+- `LessonState` (`lesson.py`) is the source of truth for objectives, timing and outcome.
+- `LessonClock` nudges the tutor to wrap up at 85% of the lesson time and forces the close at 120%.
+- `LessonRecorder` persists every change to the planner and mirrors it to the browser. Failures are logged, not passed to the model, and everything is re-sent when the lesson ends.
+- If the learner leaves or the call drops, a shutdown callback records the lesson as completed (all goals met) or abandoned, so the planner picks up from there next time.
+- If the learner never joins within 30 seconds the job leaves, and when the session closes the job shuts down so no Gradium session outlives the learner.
+
+### How the UI talks to the agents
+
+The browser never calls an agent directly. Every request goes through the Next.js server (server components, server actions and the `/api/session` route), which reads the learner's email from an httpOnly cookie and calls the services over the Compose network. That keeps service URLs off the client and stops a browser from acting as another user. The email is the user id; there is no other auth.
+
+**UI ↔ Agno planner (plain HTTP request/response)**
+
+| Moment in the app | What the UI does | What the planner does |
+|---|---|---|
+| Onboarding steps | Server actions save each answer straight to Postgres (`answers` table, `frontend/lib/answers.ts`). This is the only data the frontend writes. | Nothing yet. |
+| "Getting your lesson ready…" (`/wizard/preparing`) | The page's server component calls `POST /get_next_lesson/` and waits up to two minutes. Meanwhile Next.js streams `loading.tsx`, where Lumi narrates the steps. | Runs the workflow: reads the answers, builds the plan if needed, writes the next lesson. On success the UI redirects to home; on failure it shows a calm retry. |
+| Home (`/home`) | Calls `GET /progress/{user}` and renders the plan path, today's lesson with its goals, and "Last time" from the previous lesson. | Returns the plan with unit statuses and the recent lessons. Read-only. |
+| After a lesson | **Back to my path** goes to `/wizard/preparing` again. | Re-runs the workflow, which now sees the finished lesson and plans the next one. |
+
+The planner's agents run only between lessons. The UI shows their output (plan units, lesson titles, objectives, vocabulary), but never talks to the LLM itself.
+
+**UI ↔ LiveKit voice agent (real time over WebRTC)**
+
+1. **Start the lesson** (`components/LessonRoom.tsx`) posts to `/api/session`. The click also counts as the user gesture browsers require before playing audio. The route forwards to `voice-api`, which returns the LiveKit URL, a 30-minute token for a fresh room, the progress topic and the lesson (title, duration, objectives).
+2. The page mounts `<LiveKitRoom>` from `@livekit/components-react` with that token and turns on the microphone. Joining the room is what makes LiveKit dispatch the tutor job; if the agent hasn't arrived after 25 seconds the UI says so.
+3. During the lesson the UI listens to three streams from the room:
+   - **Audio:** `RoomAudioRenderer` plays Lumi's voice, and the learner's mic track goes to the agent.
+   - **Agent state:** `useVoiceAssistant()` reports `listening`, `thinking` or `speaking`. That drives Lumi's face, the voice meter, the status line and the panel colour (yellow when it's the learner's turn).
+   - **Transcripts:** `useTranscriptions()` gives the live text of both speakers for the Conversation panel.
+4. **Goals** come over a LiveKit data channel. Whenever the agent's `mark_objective_done` or `complete_lesson` tool runs, the worker publishes the whole lesson state (objectives, outcome, summary, new words) on the `lesson-progress` topic. The UI swaps in that state, ticks the goal and shows a short "Goal reached" toast. Because the full state is re-sent every time, a missed message is fixed by the next one.
+5. **Ending:** when the agent calls `end_call` or the learner presses **End lesson**, the room disconnects and the UI shows the wrap-up from the last progress message (summary, new words, goals). The worker has already saved the outcome in the planner, so the UI does not write anything itself.
+
+The mic button, the timer and leaving the page are handled entirely in the browser; the agent learns about them only through audio and the room disconnecting, which its shutdown callback turns into a completed or abandoned lesson.
+
+### Languages and models
 
 Supported target languages: English, Spanish, German, French. Italian was dropped because Gradium rejects it (`Unsupported language 'it'`, see `voice_agent/scripts/probe_gradium.py`).
 
-Models: `openai/gpt-5.4-nano` via OpenRouter for both the planner and the tutor (minimal reasoning). Override with `PLANNER_MODEL` / `VOICE_LLM_MODEL`; models that accept it get temperature 0.1.
+Both the planner and the tutor default to `openai/gpt-5.4-nano` through OpenRouter (minimal reasoning). Override with `PLANNER_MODEL` / `VOICE_LLM_MODEL`; models that accept it get temperature 0.1.
 
 ## What you need
 
