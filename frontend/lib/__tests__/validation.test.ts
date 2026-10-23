@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   normalizeEmail,
   normalizeLearningGoal,
-  normalizeLessonDuration,
+  normalizeNativeLanguage,
+  normalizeTargetLanguage,
 } from "../validation";
 
 describe("normalizeEmail", () => {
@@ -26,17 +27,27 @@ describe("normalizeLearningGoal", () => {
   });
 });
 
-describe("normalizeLessonDuration", () => {
-  it("parses a positive integer", () => {
-    expect(normalizeLessonDuration(" 30 ")).toBe(30);
+describe("normalizeTargetLanguage", () => {
+  it("accepts the four supported codes", () => {
+    expect(["en", "es", "de", "fr"].map(normalizeTargetLanguage)).toEqual(["en", "es", "de", "fr"]);
   });
-  it("rejects zero", () => {
-    expect(normalizeLessonDuration("0")).toBeNull();
+  it("normalizes case and whitespace", () => {
+    expect(normalizeTargetLanguage(" ES ")).toBe("es");
   });
-  it("rejects non-numeric input", () => {
-    expect(normalizeLessonDuration("abc")).toBeNull();
+  it("rejects Italian, which Gradium cannot speak", () => {
+    expect(normalizeTargetLanguage("it")).toBeNull();
   });
-  it("rejects decimals", () => {
-    expect(normalizeLessonDuration("30.5")).toBeNull();
+});
+
+describe("normalizeNativeLanguage", () => {
+  it("capitalizes a typed language", () => {
+    expect(normalizeNativeLanguage("  italian ")).toBe("Italian");
+  });
+  it("accepts non-Latin scripts", () => {
+    expect(normalizeNativeLanguage("Українська")).toBe("Українська");
+  });
+  it("rejects digits and symbols", () => {
+    expect(normalizeNativeLanguage("123")).toBeNull();
+    expect(normalizeNativeLanguage("<script>")).toBeNull();
   });
 });

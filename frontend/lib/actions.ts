@@ -8,13 +8,14 @@ import { userExists } from "@/lib/users";
 import {
   normalizeEmail,
   normalizeLearningGoal,
-  normalizeLessonDuration,
+  normalizeNativeLanguage,
+  normalizeTargetLanguage,
 } from "@/lib/validation";
 
 /**
- * Screen 0: validate the email and store it in a cookie. Returning users (an
- * email already in the answers table) go to the welcome-back screen; new users
- * enter the wizard. Returns an error message string on invalid input.
+ * Screen 0: validate the email and store it in a cookie. Returning users go
+ * straight to the preparing screen, where the planner reviews their progress
+ * and readies the next lesson; new users enter the wizard.
  */
 export async function startSession(
   _prev: string | null,
@@ -22,29 +23,55 @@ export async function startSession(
 ): Promise<string | null> {
   const email = normalizeEmail(String(formData.get("email") ?? ""));
   if (!email) {
-    return "Enter a valid email address.";
+    return "That doesn't look like an email yet. Try something like you@example.com.";
   }
   await setUserEmail(email);
   const returning = await userExists(email);
-  redirect(returning ? "/wizard/welcome-back" : "/wizard/q1");
+  redirect(returning ? "/wizard/preparing" : "/wizard/q1");
 }
 
-/**
- * Q1 gate: YES enters Q2; NO returns the marker "declined" so the page
- * can show the gate screen. Nothing is persisted.
- */
+/** Q1 gate: YES enters the wizard; NO returns "declined" so the page shows the gate. */
 export async function answerQ1(
   _prev: string | null,
   formData: FormData,
 ): Promise<string | null> {
   await requireUserEmail();
   if (String(formData.get("choice") ?? "") === "yes") {
-    redirect("/wizard/q2");
+    redirect("/wizard/language");
   }
   return "declined";
 }
 
-/** Q2: persist the open-ended learning goal, then advance to Q3. */
+/** Persist the single target language, then ask for the native language. */
+export async function saveTargetLanguage(
+  _prev: string | null,
+  formData: FormData,
+): Promise<string | null> {
+  const userId = await requireUserEmail();
+  const code = normalizeTargetLanguage(String(formData.get("language") ?? ""));
+  if (!code) {
+    return "Pick one of the languages to continue.";
+  }
+  await upsertAnswer(userId, QUESTION.TARGET_LANGUAGE, code);
+  redirect("/wizard/native");
+}
+
+/** Persist the native language (picked or typed), then ask how they like to learn. */
+export async function saveNativeLanguage(
+  _prev: string | null,
+  formData: FormData,
+): Promise<string | null> {
+  const userId = await requireUserEmail();
+  const typed = String(formData.get("other") ?? "").trim();
+  const name = normalizeNativeLanguage(typed || String(formData.get("native") ?? ""));
+  if (!name) {
+    return "Choose your language or type its name in letters.";
+  }
+  await upsertAnswer(userId, QUESTION.NATIVE_LANGUAGE, name);
+  redirect("/wizard/q2");
+}
+
+/** Persist the open-ended learning style, then let the planner build the first lesson. */
 export async function saveLearningGoal(
   _prev: string | null,
   formData: FormData,
@@ -55,34 +82,5 @@ export async function saveLearningGoal(
     return "Tell me a little about how you'd like to learn.";
   }
   await upsertAnswer(userId, QUESTION.HOW_TO_LEARN, goal);
-  redirect("/wizard/q3");
-}
-
-/**
- * Q3: persist the lesson duration in minutes, then send the new user to the
- * preparing screen, which asks the microservice to build their first lesson.
- */
-export async function saveLessonDuration(
-  _prev: string | null,
-  formData: FormData,
-): Promise<string | null> {
-  const userId = await requireUserEmail();
-  const minutes = normalizeLessonDuration(String(formData.get("answer") ?? ""));
-  if (minutes === null) {
-    return "Enter a whole number of minutes greater than zero.";
-  }
-  await upsertAnswer(userId, QUESTION.LESSON_DURATION, String(minutes));
-  redirect("/wizard/preparing");
-}
-
-/**
- * Returning-user action: send the user to the preparing screen. That screen
- * owns the call to the lesson-planning microservice (see preparing/page.tsx).
- */
-export async function planNextLesson(
-  _prev: string | null,
-  _formData: FormData,
-): Promise<string | null> {
-  await requireUserEmail();
   redirect("/wizard/preparing");
 }
