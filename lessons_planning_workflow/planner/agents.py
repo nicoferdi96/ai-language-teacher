@@ -14,6 +14,7 @@ from planner.models import (
     LessonBriefDraft,
     LessonRecord,
 )
+from planner.tracing import run_traced
 
 PLANNER_MODEL = os.getenv("PLANNER_MODEL", "openai/gpt-5.4-nano")
 PLANNER_TEMPERATURE = float(os.getenv("PLANNER_TEMPERATURE", "0.1"))
@@ -115,7 +116,7 @@ class CurriculumAgent:
 
     async def design(self, profile: LearnerProfile) -> LearningPlanDraft:
         """Return a structured plan draft for the learner."""
-        response = await self.agent.arun(self.build_prompt(profile))
+        response = await run_traced(self.agent, self.build_prompt(profile))
         return LearningPlanDraft.model_validate(response.content)
 
 
@@ -176,5 +177,5 @@ class LessonAgent:
         self, profile: LearnerProfile, plan: LearningPlan, recent_lessons: list[LessonRecord]
     ) -> LessonBriefDraft:
         """Return a structured brief for the next lesson."""
-        response = await self.agent.arun(self.build_prompt(profile, plan, recent_lessons))
+        response = await run_traced(self.agent, self.build_prompt(profile, plan, recent_lessons))
         return LessonBriefDraft.model_validate(response.content)

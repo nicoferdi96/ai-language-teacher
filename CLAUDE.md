@@ -31,6 +31,7 @@ Flow: frontend → planner (`/get_next_lesson/`, `/progress/{user}`) and → voi
 - **Turn timings live in `voice_agent/tutor/turn.py`**, copied from unmute-core's balanced LiveKit pace (VAD 0.3 s, dynamic endpointing 0.3–1.6 s, adaptive interruption, preemptive generation). Change them only with before/after numbers from the worker's `turn:` log lines.
 - **Gradium interims are one word each**; `tutor/transcript.py` joins them in `TutorAgent.stt_node`. Keep that if you touch the STT node.
 - **Gradium concurrency is plan-limited** (the dev account allows 3 sessions), so assume one live lesson at a time.
+- **Tracing is Langfuse Python SDK v4** (`<5`), always with the `x-langfuse-ingestion-version: 4` header. The planner records its own observations (`planner/tracing.py`); the worker routes LiveKit's built-in OTel spans and stamps the lesson on each in `tutor/telemetry.py` via `LessonStamp`, because `propagate_attributes` misses spans LiveKit starts in other tasks. Its exporter strips the model from `llm_node`/`llm_request_run`, or Langfuse prices each LLM call two or three times.
 - The user id is the email, stored in an httpOnly cookie (`frontend/lib/session.ts`); there is no other auth.
 - The git remote is named `main`, not `origin`: `git push -u main <branch>`.
 

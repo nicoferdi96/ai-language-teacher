@@ -1,9 +1,12 @@
 import logging
 import sys
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+from langfuse import get_client
 from pydantic import BaseModel, EmailStr, Field
 
 from planner.models import (
@@ -14,6 +17,7 @@ from planner.models import (
     ObjectiveUpdate,
 )
 from planner.repository import LearnerRepository, LessonNotFoundError, ObjectiveNotFoundError
+from planner.tracing import setup_tracing
 from planner.workflow import LessonPlanningWorkflow
 
 load_dotenv()
@@ -23,8 +27,17 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger(__name__)
+setup_tracing()
 
-app = FastAPI(title="Lesson planner")
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    """Send buffered traces before the server stops."""
+    yield
+    get_client().shutdown()
+
+
+app = FastAPI(title="Lesson planner", lifespan=lifespan)
 repository = LearnerRepository()
 planning_workflow = LessonPlanningWorkflow(repository=repository)
 

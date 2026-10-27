@@ -68,6 +68,9 @@ services:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
       VOICE_LLM_MODEL: ${VOICE_LLM_MODEL:-openai/gpt-5.4-nano}
       PLANNER_BASE_URL: http://lesson-planner:8000
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY}
+      LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL}
     depends_on:
       - lesson-planner
 

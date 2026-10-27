@@ -5,10 +5,12 @@ import logging
 from collections import defaultdict
 
 from agno.workflow import Step, StepInput, StepOutput, Workflow
+from langfuse import get_client, observe, propagate_attributes
 
 from planner.agents import CurriculumAgent, LessonAgent
 from planner.models import LessonPackage, LessonRecord, ProgressSnapshot
 from planner.repository import LearnerRepository
+from planner.tracing import TRACE_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -35,10 +37,19 @@ class LessonPlanningWorkflow:
             ],
         )
 
+    @observe(name="review-progress", capture_input=False, capture_output=False)
     async def review_progress(self, step_input: StepInput) -> StepOutput:
         """Load where the learner stands from Postgres."""
         user_id = step_input.additional_data["user_id"]
         snapshot = await self.repository.snapshot(user_id)
+        get_client().update_current_span(
+            output={
+                "target_language": snapshot.profile.target_language,
+                "has_plan": snapshot.plan is not None,
+                "recent_lessons": len(snapshot.recent_lessons),
+                "open_lesson": str(snapshot.open_lesson.lesson_uuid) if snapshot.open_lesson else None,
+            }
+        )
         logger.info(
             "Progress for %s: plan=%s, recent lessons=%d, open lesson=%s",
             user_id,
@@ -48,15 +59,19 @@ class LessonPlanningWorkflow:
         )
         return StepOutput(content=snapshot)
 
+    @observe(name="ensure-plan", capture_input=False, capture_output=False)
     async def ensure_plan(self, step_input: StepInput) -> StepOutput:
         """Build and store a learning plan when the learner has none."""
         snapshot: ProgressSnapshot = step_input.previous_step_content
         if snapshot.plan is not None:
+            get_client().update_current_span(output={"plan_id": str(snapshot.plan.plan_id), "created": False})
             return StepOutput(content=snapshot)
         draft = await self.curriculum_agent.design(snapshot.profile)
         plan = await self.repository.create_plan(snapshot.profile, draft)
+        get_client().update_current_span(output={"plan_id": str(plan.plan_id), "created": True})
         return StepOutput(content=snapshot.model_copy(update={"plan": plan}))
 
+    @observe(name="prepare-lesson", capture_input=False, capture_output=False)
     async def prepare_lesson(self, step_input: StepInput) -> StepOutput:
         """Reuse the open lesson or design and store the next one."""
         snapshot: ProgressSnapshot = step_input.previous_step_content
@@ -83,6 +98,13 @@ class LessonPlanningWorkflow:
             level=plan.level,
             unit=unit,
         )
+        get_client().update_current_span(
+            output={
+                "lesson_uuid": str(lesson.lesson_uuid),
+                "title": lesson.title,
+                "reused_open_lesson": snapshot.open_lesson is not None,
+            }
+        )
         return StepOutput(content=package)
 
     @staticmethod
@@ -94,12 +116,27 @@ class LessonPlanningWorkflow:
     async def run(self, user_id: str) -> LessonPackage:
         """Run the full workflow for a learner and return the lesson package.
 
-        A per-learner lock keeps concurrent requests from creating two lessons.
+        A per-learner lock keeps concurrent requests from creating two lessons. The run is
+        one Langfuse trace, tagged with the learner's id.
         """
-        async with self.locks[user_id]:
-            result = await self.workflow.arun(
-                input=f"Prepare the next lesson for {user_id}",
-                additional_data={"user_id": user_id},
-                stream=False,
+        with (
+            get_client().start_as_current_observation(
+                as_type="chain", name=TRACE_NAME, input={"user_id": user_id}
+            ) as root,
+            propagate_attributes(user_id=user_id, trace_name=TRACE_NAME, tags=["planner"]),
+        ):
+            async with self.locks[user_id]:
+                result = await self.workflow.arun(
+                    input=f"Prepare the next lesson for {user_id}",
+                    additional_data={"user_id": user_id},
+                    stream=False,
+                )
+            package = LessonPackage.model_validate(result.content)
+            root.update(
+                output={
+                    "lesson_uuid": str(package.lesson.lesson_uuid),
+                    "title": package.lesson.title,
+                    "level": package.level,
+                }
             )
-        return LessonPackage.model_validate(result.content)
+        return package

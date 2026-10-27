@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+os.environ["LANGFUSE_TRACING_ENABLED"] = "false"
 
 from planner.repository import LearnerRepository  # noqa: E402
 from utils.db_config import get_connection_string  # noqa: E402

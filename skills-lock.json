@@ -13,6 +13,12 @@
       "skillPath": "skills/debugging-livekit-agents/SKILL.md",
       "computedHash": "edfdc9ffbc6c63559295d21277cbbcdc9dad096941d5ea7be91a8d12ca67094c"
     },
+    "langfuse": {
+      "source": "langfuse/skills",
+      "sourceType": "github",
+      "skillPath": "skills/langfuse/SKILL.md",
+      "computedHash": "ff5c606d22961ae0c70968e8944c73ce576a3a0a8422415861d6d7839a45539d"
+    },
     "operating-livekit-agents": {
       "source": "livekit/agent-skills",
       "sourceType": "github",

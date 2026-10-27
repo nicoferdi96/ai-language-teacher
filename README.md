@@ -187,7 +187,7 @@ cp .env.example .env
 | `LIVEKIT_API_SECRET` | Yes | Shown once when you create the API key. | voice API, voice worker |
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | Yes (defaults provided) | Pick any values; Compose creates the database with them. | postgres, planner |
 | `PLANNER_MODEL` / `VOICE_LLM_MODEL` | No | Any OpenRouter model id, e.g. `openai/gpt-5.4-mini`. Empty means the default. | planner, tutor |
-| `LANGFUSE_SECRET_KEY` / `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_BASE_URL` | No | [Langfuse](https://cloud.langfuse.com) project settings, for tracing. | planner |
+| `LANGFUSE_SECRET_KEY` / `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_BASE_URL` | No | [Langfuse](https://cloud.langfuse.com) project settings, for tracing. Empty means no tracing. | planner, tutor |
 
 Tip: with the [LiveKit CLI](https://docs.livekit.io/home/cli/) installed, `lk project list` shows your project URL.
 

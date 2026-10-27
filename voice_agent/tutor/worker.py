@@ -17,6 +17,7 @@ from tutor.languages import get_language
 from tutor.lesson import LessonPackage, LessonState, ProgressEvent
 from tutor.planner_client import PlannerClient
 from tutor.session import build_session, load_vad
+from tutor.telemetry import flush_tracing, setup_tracing
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 logger = logging.getLogger("tutor")
@@ -29,8 +30,9 @@ server = AgentServer()
 
 
 def prewarm(proc: JobProcess) -> None:
-    """Load the VAD once per worker process, so a lesson starts without the model load."""
+    """Load the VAD and start Langfuse tracing once per worker process, before any lesson."""
     proc.userdata["vad"] = load_vad()
+    proc.userdata["tracer_provider"] = setup_tracing()
 
 
 server.setup_fnc = prewarm
@@ -58,6 +60,8 @@ async def entrypoint(ctx: JobContext) -> None:
         """Record the lesson as abandoned or completed if it is still open."""
         await agent.finalize(summary="You stopped before the end of the lesson. We'll pick up from here.")
         await planner.aclose()
+        if (provider := ctx.proc.userdata.get("tracer_provider")) is not None:
+            await flush_tracing(provider)
 
     await ctx.connect()
     try:
