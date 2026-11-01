@@ -34,7 +34,7 @@ from tutor.lesson import LessonPackage, LessonState, LessonTimer, VocabularyItem
 from tutor.planner import LessonRecorder, PlannerClient
 from tutor.prompt import TutorPrompt
 from tutor.settings import settings
-from tutor.telemetry import flush_tracing, setup_tracing
+from tutor.telemetry import flush_tracing, record_stt_usage, setup_tracing
 from tutor.turn import BALANCED, load_vad, log_turn_metrics, turn_handling, yield_to_caller
 
 logger = logging.getLogger("tutor")
@@ -254,10 +254,12 @@ async def lesson_entrypoint(ctx: JobContext) -> None:
         return
 
     async def on_shutdown() -> None:
-        """Record the lesson as abandoned or completed if it is still open, then flush traces."""
+        """Record the lesson as abandoned or completed if it is still open, then its STT usage, then flush traces."""
         await tutor.finalize(summary="You stopped before the end of the lesson. We'll pick up from here.")
         await recorder.aclose()
-        await flush_tracing(ctx.proc.userdata.get("tracer_provider"))
+        tracer_provider = ctx.proc.userdata.get("tracer_provider")
+        record_stt_usage(tracer_provider, session.usage)
+        await flush_tracing(tracer_provider)
 
     ctx.add_shutdown_callback(on_shutdown)
     await recorder.start()
