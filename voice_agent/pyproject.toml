@@ -5,7 +5,7 @@ requires-python = ">=3.13"
 dependencies = [
     "fastapi[standard]>=0.136",
     "langfuse>=4.9,<5",
-    "livekit-agents[gradium,openai,silero]~=1.8",
+    "livekit-agents[anthropic,cartesia,soniox,silero]~=1.8",
     "livekit-api>=1.2",
     "opentelemetry-exporter-otlp-proto-http>=1.45.1",
     "psycopg[binary]>=3.3",
@@ -23,4 +23,4 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-markers = ["live: calls OpenRouter (RUN_LIVE=1)"]
+markers = ["live: calls Anthropic (RUN_LIVE=1)"]

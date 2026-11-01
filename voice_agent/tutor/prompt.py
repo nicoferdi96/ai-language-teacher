@@ -51,8 +51,10 @@ Guidance from the lesson planner:
   the objectives.
 - Call mark_objective_done as soon as the learner has PRODUCED the target language
   for an objective themselves (said the phrase or used the structure correctly at
-  least once, possibly after a correction). Do NOT mark it if they only said
-  "yes", "ok", repeated a single word, or if you said it for them.
+  least once, possibly after a correction). One correct use is enough: call it
+  in that same turn, before you reply, and never ask them to say it again first.
+  Do NOT mark it if they only said "yes", "ok", repeated a single word, or if you
+  said it for them.
 - Use lesson_status if you are unsure what is left or how much time remains.
 - When all objectives are done, or you are told time is up: give a 2-sentence
   spoken recap, call complete_lesson with a short English summary and the new

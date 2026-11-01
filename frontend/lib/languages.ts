@@ -1,4 +1,4 @@
-/** A language the tutor can teach (each backed by Gradium speech). */
+/** A language the tutor can teach (each backed by Soniox and Cartesia speech). */
 export type TargetLanguage = {
   code: "en" | "es" | "de" | "fr";
   name: string;

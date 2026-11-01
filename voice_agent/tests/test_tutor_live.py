@@ -1,21 +1,21 @@
-"""Live behaviour tests: real tutor LLM via OpenRouter, text mode, judged where needed."""
+"""Live behaviour tests: real tutor LLM (Claude), text mode, judged where needed."""
 
 import os
 from contextlib import asynccontextmanager
 
 import pytest
 from livekit.agents import AgentSession, ChatContext
-from livekit.plugins import openai
 
-from agent import Lumi, build_llm
+from agent import Lumi, TutorLLM, build_llm, secret
 from tutor.languages import get_language
 from tutor.lesson import LessonState
+from tutor.settings import settings
 
 from conftest import make_package
 
 pytestmark = pytest.mark.live
 
-JUDGE_MODEL = os.getenv("JUDGE_MODEL", "openai/gpt-4.1-mini")
+JUDGE_MODEL = os.getenv("JUDGE_MODEL", "claude-haiku-5-5")
 
 
 @asynccontextmanager
@@ -24,7 +24,7 @@ async def tutor_session(language: str = "es", history: list[tuple[str, str]] | N
     state = LessonState(package=make_package(language, **overrides))
     agent = Lumi(state)
     async with (
-        openai.LLM.with_openrouter(model=JUDGE_MODEL) as judge,
+        TutorLLM(model=JUDGE_MODEL, api_key=secret(settings.anthropic_api_key), effort="medium") as judge,
         build_llm() as llm,
         AgentSession(llm=llm) as session,
     ):

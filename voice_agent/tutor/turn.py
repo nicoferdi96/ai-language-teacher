@@ -18,7 +18,6 @@ from livekit.agents import (
     UserStateChangedEvent,
     inference,
     metrics,
-    stt,
 )
 from livekit.plugins import silero
 from pydantic import BaseModel, ConfigDict, Field
@@ -126,26 +125,3 @@ def log_turn_metrics(session: AgentSession) -> None:
 
     session.on("metrics_collected", on_metrics)
 
-
-class InterimJoiner:
-    """Turns Gradium's per-word interim transcripts into the text heard so far in the utterance.
-
-    Gradium sends each interim transcript with only its newest word and joins the words
-    only in the final one. LiveKit publishes every interim as the whole line, so without
-    this the learner's transcript bubble would show one word at a time.
-    """
-
-    def __init__(self) -> None:
-        """Start with an empty line."""
-        self._words: list[str] = []
-
-    def push(self, event: stt.SpeechEvent) -> stt.SpeechEvent:
-        """Return the event with cumulative interim text; a final event resets the line."""
-        if event.type == stt.SpeechEventType.FINAL_TRANSCRIPT:
-            self._words = []
-        elif event.type == stt.SpeechEventType.INTERIM_TRANSCRIPT and event.alternatives:
-            first = event.alternatives[0]
-            if word := first.text.strip():
-                self._words.append(word)
-            first.text = " ".join(self._words)
-        return event
