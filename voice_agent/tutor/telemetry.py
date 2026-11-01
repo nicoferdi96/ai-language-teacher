@@ -6,6 +6,8 @@ spans), so this module routes them to Langfuse, stamps the lesson on each, and k
 around a model request from being priced. LiveKit keeps the STT transcript, the TTS text and
 their timings in its own ``lk.*`` attributes, which Langfuse files away as raw metadata, so the
 exporter maps them onto Langfuse's input, output, usage and metadata fields (see ``rewrite``).
+The root ``job_entrypoint`` gets the lesson's goal in and outcome out (``record_lesson_outcome``),
+and the trace is flushed the moment LiveKit ends that root (``FlushOnJobEnd``).
 Without ``LANGFUSE_PUBLIC_KEY`` and ``LANGFUSE_SECRET_KEY`` (see ``tutor.settings``) nothing is
 set up and the tutor runs the same.
 """
@@ -14,6 +16,7 @@ import asyncio
 import base64
 import json
 import logging
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -31,7 +34,7 @@ from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 from opentelemetry.util.types import AttributeValue
 from pydantic import ValidationError
 
-from tutor.lesson import LessonDispatch
+from tutor.lesson import LessonDispatch, LessonState
 from tutor.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -41,7 +44,9 @@ LIVEKIT_SCOPE = "livekit-agents"
 TUTOR_SCOPE = "voice-tutor"
 ANTHROPIC_SCOPE = "com.anthropic.sdk.python"
 FLUSH_TIMEOUT_S = 5.0
-WRAPPER_SPANS = frozenset({"llm_node", "llm_request_run", "tts_request_run"})
+JOB_ROOT = "job_entrypoint"
+"""LiveKit's root span for a job, the lesson trace's root observation; it ends after the shutdown callbacks."""
+WRAPPER_SPANS = frozenset({"llm_node", "llm_request_run", "tts_node", "tts_request_run"})
 """LiveKit spans around one ``llm_request`` or ``tts_request``. They carry the model name, and
 Langfuse prices any observation with a model, so each call would be counted two or three times."""
 MODEL_ATTRIBUTES = frozenset({"gen_ai.request.model", "gen_ai.response.model"})
@@ -72,8 +77,13 @@ def job_attributes(metadata: str) -> dict[str, AttributeValue]:
         return {}
 
 
+job_roots: dict[str, Span] = {}
+"""Each running job's ``job_entrypoint`` span by job id, kept by ``LessonStamp`` so the lesson
+outcome can be written on the trace's root observation before LiveKit ends it."""
+
+
 class LessonStamp(SpanProcessor):
-    """Stamps the lesson of the running job on every span, LiveKit's included.
+    """Stamps the lesson of the running job on every span, LiveKit's included, and keeps its root.
 
     It reads the job's dispatch metadata, as LiveKit's own stamp does, because the trace's
     root ``job_entrypoint`` starts before the entrypoint runs and a process may host several
@@ -81,10 +91,45 @@ class LessonStamp(SpanProcessor):
     """
 
     def on_start(self, span: Span, parent_context: Context | None = None) -> None:
-        """Stamp the job's lesson on a span that just started."""
+        """Stamp the job's lesson on a span that just started; remember the job's root span."""
         ctx = get_job_context(required=False)
-        if ctx is not None and (attributes := job_attributes(ctx.job.metadata)):
+        if ctx is None:
+            return
+        if attributes := job_attributes(ctx.job.metadata):
             span.set_attributes(attributes)
+        if span.name == JOB_ROOT:
+            job_roots[ctx.job.id] = span
+
+    def on_end(self, span: ReadableSpan) -> None:
+        """Forget a job's root span once it ends."""
+        if span.name == JOB_ROOT:
+            ended = span.get_span_context()
+            for job_id in [job_id for job_id, root in job_roots.items() if root.get_span_context() == ended]:
+                del job_roots[job_id]
+
+
+class FlushOnJobEnd(SpanProcessor):
+    """Sends the lesson's last spans as soon as LiveKit ends the job's root span.
+
+    LiveKit ends ``job_shutdown`` and ``job_entrypoint`` after the shutdown callbacks, so a flush
+    there cannot include them; without this they wait for the batch exporter's next tick and are
+    lost if the process exits first. Registered after Langfuse's processor, which has queued the
+    root by the time this runs; the flush runs in a thread so the event loop never waits on it.
+    """
+
+    def __init__(self, provider: TracerProvider):
+        """Flush ``provider`` whenever a job's root span ends."""
+        self.provider = provider
+
+    def on_end(self, span: ReadableSpan) -> None:
+        """Start a background flush when the span is a job's root."""
+        if span.name == JOB_ROOT:
+            threading.Thread(target=self.flush, name="langfuse-flush", daemon=True).start()
+
+    def flush(self) -> None:
+        """Flush the provider, warning when Langfuse does not answer in time."""
+        if not self.provider.force_flush(int(FLUSH_TIMEOUT_S * 1000)):
+            logger.warning("Langfuse did not flush within %.0f s; the lesson trace may be incomplete", FLUSH_TIMEOUT_S)
 
 
 def with_attributes(span: ReadableSpan, attributes: Mapping[str, AttributeValue]) -> ReadableSpan:
@@ -128,12 +173,13 @@ def tts_generation(span: ReadableSpan) -> dict[str, AttributeValue]:
     attributes = span.attributes or {}
     metrics = json.loads(str(attributes.get("lk.tts_metrics", "{}")))
     ttfb = metrics.get("ttfb")
+    audio_duration = metrics.get("audio_duration")
     mapped: dict[str, AttributeValue] = {
         "langfuse.observation.type": "generation",
         **observation_metadata(
             {
                 "ttfb": ttfb,
-                "audio_duration": metrics.get("audio_duration"),
+                "audio_duration": audio_duration,
                 "streamed": metrics.get("streamed"),
                 "cancelled": metrics.get("cancelled"),
             }
@@ -141,6 +187,8 @@ def tts_generation(span: ReadableSpan) -> dict[str, AttributeValue]:
     }
     if (text := attributes.get("lk.pii.input_text")) is not None:
         mapped["langfuse.observation.input"] = text
+    if audio_duration is not None:
+        mapped["langfuse.observation.output"] = json.dumps({"audio_seconds": round(audio_duration, 2)})
     if (characters := metrics.get("characters_count")) is not None:
         mapped["langfuse.observation.usage_details"] = json.dumps({"input": characters})
     if isinstance(ttfb, int | float) and ttfb >= 0 and span.start_time is not None:
@@ -149,8 +197,22 @@ def tts_generation(span: ReadableSpan) -> dict[str, AttributeValue]:
     return mapped
 
 
+def span_seconds(span: ReadableSpan) -> float | None:
+    """Return how long a finished span ran, in seconds."""
+    if span.start_time is None or span.end_time is None:
+        return None
+    return round((span.end_time - span.start_time) / 1e9, 2)
+
+
+def stt_event_counts(attributes: Mapping[str, AttributeValue]) -> dict[str, int]:
+    """Count the STT events of one turn by type, from LiveKit's ``lk.stt.events`` JSON list."""
+    events = json.loads(str(attributes.get("lk.stt.events", "[]")))
+    types = [event.get("type") for event in events]
+    return {f"{kind}_count": types.count(kind) for kind in ("interim_transcript", "final_transcript")}
+
+
 def stt_generation(span: ReadableSpan) -> dict[str, AttributeValue]:
-    """Map one learner turn: the transcript out, with its confidence and delays.
+    """Map one learner turn: the transcript out, with its length, confidence, delays and STT events.
 
     Usage stays off: Soniox bills the whole open stream, recorded once per lesson by
     ``record_stt_usage``, not the seconds of each turn.
@@ -160,9 +222,11 @@ def stt_generation(span: ReadableSpan) -> dict[str, AttributeValue]:
         "langfuse.observation.type": "generation",
         **observation_metadata(
             {
+                "turn_seconds": span_seconds(span),
                 "transcript_confidence": attributes.get("lk.transcript_confidence"),
                 "transcription_delay": attributes.get("lk.transcription_delay"),
                 "end_of_turn_delay": attributes.get("lk.end_of_turn_delay"),
+                **stt_event_counts(attributes),
             }
         ),
     }
@@ -258,6 +322,7 @@ def stt_usage_attributes(usage: STTModelUsage) -> dict[str, AttributeValue]:
         "langfuse.observation.type": "generation",
         "langfuse.observation.model.name": usage.model,
         "langfuse.observation.usage_details": json.dumps({"input": round(usage.audio_duration)}),
+        "langfuse.observation.output": json.dumps({"audio_seconds": round(usage.audio_duration, 1)}),
         **observation_metadata({"unit": "seconds", "provider": usage.provider}),
     }
 
@@ -276,6 +341,43 @@ def record_stt_usage(provider: TracerProvider | None, usage: AgentSessionUsage) 
             tracer.start_span("stt_usage", attributes=stt_usage_attributes(model_usage)).end()
 
 
+def lesson_input(state: LessonState) -> dict[str, object]:
+    """Return what the lesson set out to do: its title, goal and steps."""
+    plan = state.plan
+    return {"lesson_uuid": plan.lesson_uuid, "title": plan.title, "goal": plan.goal.aim, "steps": [step.task for step in state.steps]}
+
+
+def lesson_output(state: LessonState, reason: str) -> dict[str, object]:
+    """Return how the lesson ended: outcome, steps done with the learner's evidence, summary, why it closed."""
+    return {
+        "outcome": state.outcome,
+        "steps_done": len(state.steps) - len(state.remaining()),
+        "steps": [{"task": step.task, "done": step.done, "evidence": step.evidence} for step in state.steps],
+        "summary": state.summary,
+        "close_reason": reason,
+        "minutes": round(state.elapsed_minutes(), 1),
+    }
+
+
+def record_lesson_outcome(provider: TracerProvider | None, state: LessonState, reason: str) -> None:
+    """Write the lesson's goal in and its outcome out on the trace's root observation; no-op when tracing is off.
+
+    Langfuse v4 reads a trace's input and output from its root observation, LiveKit's
+    ``job_entrypoint``, which is still open while the shutdown callbacks run.
+    """
+    ctx = get_job_context(required=False)
+    if provider is None or ctx is None or (root := job_roots.get(ctx.job.id)) is None:
+        return
+    steps_done = len(state.steps) - len(state.remaining())
+    root.set_attributes(
+        {
+            "langfuse.observation.input": json.dumps(lesson_input(state), ensure_ascii=False),
+            "langfuse.observation.output": json.dumps(lesson_output(state, reason), ensure_ascii=False),
+            **observation_metadata({"outcome": state.outcome, "steps_done": steps_done, "close_reason": reason}),
+        }
+    )
+
+
 def setup_tracing() -> TracerProvider | None:
     """Send this process's LiveKit spans to Langfuse when its keys are set; return the provider."""
     if settings.langfuse_public_key is None or settings.langfuse_secret_key is None:
@@ -292,6 +394,7 @@ def setup_tracing() -> TracerProvider | None:
         span_exporter=LangfuseExporter(public_key, secret_key, base_url),
         should_export_span=should_export,
     )
+    provider.add_span_processor(FlushOnJobEnd(provider))
     set_tracer_provider(provider)
     return provider
 
