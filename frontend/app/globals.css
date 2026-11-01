@@ -820,6 +820,13 @@ h1,
   --btn-edge: oklch(0.88 0.04 28);
 }
 
+.btn--sm {
+  min-height: 2.6rem;
+  padding: 0.45rem 1rem;
+  font-size: 0.95rem;
+  border-radius: var(--radius-sm);
+}
+
 .btn--icon {
   width: 3.75rem;
   min-height: 3.75rem;
@@ -1623,6 +1630,290 @@ h1,
   font-size: 0.9rem;
 }
 
+.soundcheck {
+  width: 100%;
+  border: 2px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  text-align: left;
+  transition: border-color 200ms var(--ease);
+}
+
+.soundcheck[data-open="true"] {
+  border-color: var(--primary-tint);
+}
+
+.soundcheck__head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 0.75rem 0.75rem 1rem;
+  color: var(--primary);
+}
+
+.soundcheck__text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.soundcheck__title {
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.soundcheck__summary {
+  color: var(--ink-dim);
+  font-size: 0.9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.soundcheck__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: 0.25rem 1rem 1.1rem;
+  animation: pop-in 260ms var(--ease) both;
+}
+
+.soundcheck__alert {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.75rem 0.9rem;
+  border-radius: var(--radius-sm);
+  background: var(--error-soft);
+  color: var(--error);
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-0.4rem);
+  }
+}
+
+.devices {
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+  text-align: left;
+}
+
+.device {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.45rem;
+}
+
+.device__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: 800;
+  font-size: 0.95rem;
+  color: var(--ink);
+}
+
+.device__label svg {
+  color: var(--primary);
+}
+
+.picker {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+
+.picker__button {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  min-height: 3rem;
+  padding: 0.65rem 0.9rem;
+  border: 2px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 0 var(--press) 0 var(--line);
+  transition: transform 100ms var(--ease), box-shadow 100ms var(--ease), background 160ms var(--ease),
+    border-color 160ms var(--ease);
+}
+
+.picker__button:hover {
+  background: var(--surface-2);
+}
+
+.picker__button:active {
+  transform: translateY(var(--press));
+  box-shadow: 0 0 0 var(--line);
+}
+
+.picker__button[aria-expanded="true"] {
+  border-color: var(--primary);
+  box-shadow: 0 var(--press) 0 var(--primary-tint);
+}
+
+.picker__button:disabled {
+  cursor: not-allowed;
+  background: var(--surface-2);
+  color: var(--ink-dim);
+  font-weight: 600;
+  transform: none;
+  box-shadow: 0 var(--press) 0 var(--line);
+}
+
+.picker__value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker__chevron {
+  flex: none;
+  color: var(--ink-dim);
+  transition: transform 200ms var(--ease);
+}
+
+.picker__button[aria-expanded="true"] .picker__chevron {
+  color: var(--primary);
+  transform: rotate(180deg);
+}
+
+.picker__list {
+  position: absolute;
+  top: calc(100% + var(--press) + 0.4rem);
+  left: 0;
+  right: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  max-height: 15rem;
+  overflow-y: auto;
+  padding: 0.35rem;
+  border: 2px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: 0 0.75rem 2rem oklch(0.27 0.03 250 / 0.14);
+  outline: none;
+  animation: pop-in 180ms var(--ease) both;
+}
+
+.picker[data-up="true"] .picker__list {
+  top: auto;
+  bottom: calc(100% + 0.4rem);
+  animation-name: pop-up;
+}
+
+.picker__list:focus-visible {
+  border-color: var(--primary);
+}
+
+.picker__option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  min-height: 2.75rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: calc(var(--radius-sm) - 0.25rem);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms var(--ease);
+}
+
+.picker__option[data-active="true"] {
+  background: var(--primary-soft);
+}
+
+.picker__option[aria-selected="true"] {
+  color: var(--primary-press);
+  font-weight: 800;
+}
+
+.picker__check {
+  flex: none;
+  color: var(--primary);
+}
+
+.level {
+  display: block;
+  width: 100%;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.level__fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--leaf);
+  transform-origin: left;
+  transform: scaleX(var(--level, 0));
+  transition: transform 80ms linear;
+}
+
+.devices__hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--ink-dim);
+  font-size: 0.9rem;
+}
+
+.devices__hint[data-heard="true"] {
+  color: var(--leaf-press);
+  font-weight: 700;
+}
+
+.devices__test {
+  margin-top: 0.15rem;
+}
+
+/* Anchored to .call__controls so the panel centres on the call, not on the toggle. */
+.sound-settings {
+  display: contents;
+}
+
+.sound-settings__panel {
+  position: absolute;
+  bottom: calc(100% + 0.85rem);
+  left: 50%;
+  z-index: 2;
+  width: min(22rem, calc(100vw - 2.5rem));
+  translate: -50% 0;
+  padding: 1.1rem;
+  border: 2px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 0.75rem 2rem oklch(0.27 0.03 250 / 0.14);
+  animation: pop-up 220ms var(--spring) both;
+}
+
+@keyframes pop-up {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem) scale(0.97);
+  }
+}
+
 .lesson {
   display: grid;
   grid-template-columns: minmax(0, 1.4fr) minmax(19rem, 1fr);
@@ -1751,6 +2042,7 @@ h1,
 }
 
 .call__controls {
+  position: relative;
   display: flex;
   gap: 1rem;
   align-items: center;
