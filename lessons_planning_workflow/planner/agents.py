@@ -4,7 +4,7 @@ import json
 import os
 
 from agno.agent import Agent
-from agno.models.openrouter import OpenRouter
+from agno.models.anthropic import Claude
 
 from planner.languages import language_name
 from planner.models import (
@@ -16,19 +16,21 @@ from planner.models import (
 )
 from planner.tracing import run_traced
 
-PLANNER_MODEL = os.getenv("PLANNER_MODEL", "openai/gpt-5.4-nano")
-PLANNER_TEMPERATURE = float(os.getenv("PLANNER_TEMPERATURE", "0.1"))
-REASONING_MODEL_PREFIXES = ("openai/gpt-5", "openai/gpt-6", "openai/o")
+PLANNER_MODEL = os.getenv("PLANNER_MODEL", "claude-haiku-5-5")
 
 
-def planner_model(model_id: str = PLANNER_MODEL) -> OpenRouter:
-    """Return the OpenRouter model: minimal reasoning for reasoning models, else low temperature.
+def planner_model(model_id: str = PLANNER_MODEL) -> Claude:
+    """Return the Anthropic model at low effort with a cached system prompt.
 
-    GPT-5/6 reasoning models reject ``temperature``; OpenRouter would silently drop it.
+    Haiku 5.5 rejects non-default sampling, so no temperature; thinking stays adaptive.
     """
-    if model_id.startswith(REASONING_MODEL_PREFIXES):
-        return OpenRouter(id=model_id, reasoning_effort="minimal")
-    return OpenRouter(id=model_id, temperature=PLANNER_TEMPERATURE)
+    return Claude(
+        id=model_id,
+        api_key=os.getenv("ANTHROPIC_API_KEY") or os.getenv("CLAUDE_API_KEY"),
+        output_config={"effort": "low"},
+        cache_system_prompt=True,
+    )
+
 
 CURRICULUM_INSTRUCTIONS = """\
 You are a Curriculum Designer for a voice-first language-learning app.

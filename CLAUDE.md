@@ -5,7 +5,7 @@ Ten-minute spoken lessons with a voice tutor. A learner signs in with an email, 
 ## Run
 
 ```bash
-cp .env.example .env   # fill in OpenRouter, Gradium and LiveKit keys
+cp .env.example .env   # fill in Claude, Soniox, Cartesia and LiveKit keys
 docker compose up
 ```
 
@@ -16,9 +16,9 @@ docker compose up
 | Folder | Service | Stack |
 |---|---|---|
 | `frontend/` | Next.js app (:3000) | Next 15 App Router, React 19, server actions, plain CSS, `pg` |
-| `lessons_planning_workflow/` | lesson planner (:8000) | FastAPI + Agno, Pydantic models, uv |
+| `lessons_planning_workflow/` | lesson planner (:8000) | FastAPI + Agno (Claude Haiku 5.5), Pydantic models, uv |
 | `voice_agent/api/` | voice API (:8100) | FastAPI, mints LiveKit room tokens |
-| `voice_agent/agent.py` + `voice_agent/tutor/` | voice worker | LiveKit Agents 1.8, Gradium STT/TTS, OpenRouter LLM; `agent.py` holds the `Lumi` agent, pipeline, server and entrypoint (`python agent.py dev`); `tutor/` holds lesson models + timer, planner client + recorder, `turn.py` turn-taking, prompt, languages, telemetry, `settings.py` (pydantic-settings, every env var) |
+| `voice_agent/agent.py` + `voice_agent/tutor/` | voice worker | LiveKit Agents 1.8, Soniox STT, Cartesia TTS, Claude Haiku 5.5 LLM; `agent.py` holds the `Lumi` agent, pipeline, server and entrypoint (`python agent.py dev`); `tutor/` holds lesson models + timer, planner client + recorder, `turn.py` turn-taking, prompt, languages, telemetry, `settings.py` (pydantic-settings, every env var) |
 | `db/init.sql` | Postgres (:5433 on host) | answers, plans, plan units, lessons |
 
 Flow: frontend → planner (`/get_next_lesson/`, `/progress/{user}`) and → voice API (`/api/session` proxies it) → LiveKit dispatches the worker. The worker reports goal ticks over a data channel topic and back to the planner.
@@ -26,11 +26,11 @@ Flow: frontend → planner (`/get_next_lesson/`, `/progress/{user}`) and → voi
 ## Rules that are easy to break
 
 - **The planner is the only writer** of plans and lessons. The frontend writes onboarding answers only; the worker records progress through the planner's HTTP API.
-- **Target languages are en, es, de, fr only.** Gradium rejects Italian (`voice_agent/scripts/probe_gradium.py`). Keep `frontend/lib/languages.ts`, `lessons_planning_workflow/planner/languages.py` and `voice_agent/tutor/languages.py` in sync.
+- **Target languages are en, es, de, fr only** (`voice_agent/scripts/probe_speech.py` round-trips each). Keep `frontend/lib/languages.ts`, `lessons_planning_workflow/planner/languages.py` and `voice_agent/tutor/languages.py` in sync.
 - **The tutor speaks only the target language.** Don't write UI copy that promises explanations in the learner's native language.
 - **Turn timings live in `voice_agent/tutor/turn.py`**, copied from unmute-core's balanced LiveKit pace (VAD 0.3 s, dynamic endpointing 0.3–1.6 s, adaptive interruption, preemptive generation). Change them only with before/after numbers from the worker's `turn:` log lines.
-- **Gradium interims are one word each**; `InterimJoiner` in `tutor/turn.py` joins them in `Lumi.stt_node`. Keep that if you touch the STT node.
-- **Gradium concurrency is plan-limited** (the dev account allows 3 sessions), so assume one live lesson at a time.
+- **All LLMs are Claude via the Anthropic API**, keyed by `CLAUDE_API_KEY` (passed explicitly; the SDKs default to `ANTHROPIC_API_KEY`). Claude 5 models reject `temperature`: never send one. The tutor's `TutorLLM` (`agent.py`) adds adaptive thinking at low effort to every request and drops any `temperature` (LiveKit's `judge` adds one); with thinking disabled Haiku skipped goal ticks.
+- **Soniox interims are already the whole line so far**; don't join them again.
 - **Tracing is Langfuse Python SDK v4** (`<5`), always with the `x-langfuse-ingestion-version: 4` header. The planner records its own observations (`planner/tracing.py`); the worker routes LiveKit's built-in OTel spans and stamps the lesson on each in `tutor/telemetry.py` via `LessonStamp`, because `propagate_attributes` misses spans LiveKit starts in other tasks. Its exporter strips the model from `llm_node`/`llm_request_run`, or Langfuse prices each LLM call two or three times.
 - The user id is the email, stored in an httpOnly cookie (`frontend/lib/session.ts`); there is no other auth.
 - The git remote is named `main`, not `origin`: `git push -u main <branch>`.
@@ -40,11 +40,11 @@ Flow: frontend → planner (`/get_next_lesson/`, `/progress/{user}`) and → voi
 ```bash
 cd frontend && npm test && npx tsc --noEmit
 cd lessons_planning_workflow && uv run pytest              # needs postgres on :5433
-cd lessons_planning_workflow && RUN_LIVE=1 uv run pytest   # + live OpenRouter persona tests
+cd lessons_planning_workflow && RUN_LIVE=1 uv run pytest   # + live persona tests (Anthropic)
 cd voice_agent && RUN_LIVE=1 uv run pytest
 ```
 
-Live tests cost OpenRouter credit; they are skipped unless `RUN_LIVE=1`.
+Live tests cost Anthropic credit (the voice speech probe also costs Soniox/Cartesia credit); they are skipped unless `RUN_LIVE=1`.
 
 ## Frontend design system
 

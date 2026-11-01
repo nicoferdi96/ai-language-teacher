@@ -1,19 +1,19 @@
-"""Live persona tests: real OpenRouter agents, judged by an LLM where needed."""
+"""Live persona tests: real Anthropic agents, judged by an LLM where needed."""
 
 import json
 import os
 
 import pytest
 from agno.agent import Agent
-from agno.models.openrouter import OpenRouter
 from pydantic import BaseModel
 
+from planner.agents import planner_model
 from planner.models import LessonCompletion, VocabularyItem
 from planner.workflow import LessonPlanningWorkflow
 
 pytestmark = pytest.mark.live
 
-JUDGE_MODEL = os.getenv("JUDGE_MODEL", "openai/gpt-4.1-mini")
+JUDGE_MODEL = os.getenv("JUDGE_MODEL", "claude-haiku-5-5")
 
 
 class Verdict(BaseModel):
@@ -28,7 +28,7 @@ class Judge:
 
     def __init__(self):
         self.agent = Agent(
-            model=OpenRouter(id=JUDGE_MODEL),
+            model=planner_model(JUDGE_MODEL),
             instructions="You grade outputs of a lesson planner. Be strict but fair. "
             "Answer whether the OUTPUT satisfies the EXPECTATION.",
             output_schema=Verdict,

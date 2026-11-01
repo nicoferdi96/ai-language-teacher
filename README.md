@@ -73,9 +73,9 @@ The planner's API (`app.py`): `POST /get_next_lesson/`, `GET /progress/{user_id}
 |---|---|---|
 | Voice activity | Silero VAD | Loaded once per worker process (`prewarm`) with a 0.3 s silence floor, weights baked into the image. |
 | Turn detection | LiveKit audio turn detector `v1-mini` | Runs locally on CPU and judges the end of a turn from the audio itself, so it doesn't wait for a transcript. Dynamic endpointing between 0.3 and 1.6 s adapts to how long this learner pauses. |
-| Speech to text | Gradium STT | Set to the lesson's target language. Gradium sends one word per partial transcript; `InterimJoiner` (`turn.py`) joins them so the live text shows the whole line. |
-| LLM | `openai/gpt-5.4-nano` via OpenRouter | Minimal reasoning for low latency; models that accept it get temperature 0.1. Override with `VOICE_LLM_MODEL`. |
-| Text to speech | Gradium TTS | One voice per language (`tutor/languages.py`). |
+| Speech to text | Soniox `stt-rt-v5` | Hinted (not locked) to the lesson's target language; finalizes after 500 ms of quiet (`STT_MAX_ENDPOINT_DELAY_MS`). |
+| LLM | Claude Haiku 5.5 (`claude-haiku-5-5`) | Adaptive thinking at low effort, prompt caching on. `VOICE_LLM_THINKING=disabled` is ~0.5 s faster to first token but misses goal ticks. Override the model with `VOICE_LLM_MODEL`. |
+| Text to speech | Cartesia Sonic 3.6 | One multilingual voice (Daniel) for every language, set by `TTS_VOICE`; transcripts are aligned to the audio. |
 
 **Turn-taking** (`turn.py`) contains the VAD floor, the endpointing window, **adaptive interruption** (a short "sí" said over Lumi is heard as an answer and doesn't cut her off; a real barge-in does), **preemptive generation** (the LLM starts on the transcript before the turn is confirmed), and **yield to caller** (a reply that hasn't started playing is dropped if the learner keeps talking, so Lumi answers everything they said). The worker logs each turn's end-of-utterance delay, LLM first token and TTS first audio as `turn:` lines, so tune these values against those numbers.
 
@@ -92,7 +92,7 @@ The planner's API (`app.py`): `POST /get_next_lesson/`, `GET /progress/{user_id}
 - `LessonTimer` (`lesson.py`) nudges the tutor to wrap up at 85% of the lesson time and forces the close at 120%.
 - `LessonRecorder` (`planner.py`) persists every change to the planner and mirrors it to the browser. Failures are logged, not passed to the model, and everything is re-sent when the lesson ends.
 - If the learner leaves or the call drops, a shutdown callback records the lesson as completed (all goals met) or abandoned, so the planner picks up from there next time.
-- If the learner never joins within 30 seconds the job leaves, and when the session closes the job shuts down so no Gradium session outlives the learner.
+- If the learner never joins within 30 seconds the job leaves, and when the session closes the job shuts down so no speech session outlives the learner.
 
 ### LiveKit components we use
 
@@ -107,14 +107,14 @@ LiveKit handles all real-time audio. This is exactly which parts of it the app u
 | | `Agent`, `@function_tool`, `RunContext`, `ToolError` | `voice_agent/agent.py` | The tutor (`Lumi`): system prompt plus the `mark_objective_done`, `lesson_status` and `complete_lesson` tools. `ToolError` sends a refusal back to the model, e.g. when it tries to complete a lesson too early. |
 | | `EndCallTool` (beta) | `agent.py` | Ready-made hang-up tool: speaks a goodbye, then ends the session. |
 | | `agents.cli` | `agent.py`, `Dockerfile` | `download-files` bakes model weights into the image; `start` runs the worker in Docker; `dev` runs it locally with reload. |
-| Plugins | `livekit-plugins-gradium` | `agent.py` | Gradium STT and TTS (your `GRADIUM_API_KEY`). |
-| | `livekit-plugins-openai` (`openai.LLM.with_openrouter`) | `agent.py` | Calls the LLM through OpenRouter's OpenAI-compatible API (your `OPENROUTER_API_KEY`). |
+| Plugins | `livekit-plugins-soniox`, `livekit-plugins-cartesia` | `agent.py` | Soniox STT and Cartesia TTS (your `SONIOX_API_KEY`, `CARTESIA_API_KEY`). |
+| | `livekit-plugins-anthropic` (`TutorLLM`) | `agent.py` | Calls Claude directly (your `CLAUDE_API_KEY`). |
 | | `livekit-plugins-silero` | `tutor/turn.py` | Voice activity detection. |
 | | `inference.TurnDetector(version="v1-mini")` and adaptive interruption | `turn.py` | Audio end-of-turn model, so Lumi waits while a learner pauses mid-sentence to think but answers quickly once they're done. The interruption model needs your LiveKit keys and is free within the development allowance. |
 | Data | Room data messages (`publish_data`, topic `lesson-progress`) | `tutor/planner.py` (`LessonRecorder`) → `LessonRoom.tsx` | Sends the full lesson state to the browser after every goal tick. |
 | Browser | **`livekit-client` 2** and **`@livekit/components-react` 2.9** | `frontend/components/LessonRoom.tsx` | `LiveKitRoom` (connects with the token), `RoomAudioRenderer` (plays Lumi), `useLocalParticipant` (mic on/off), `useVoiceAssistant` (agent state and audio track), `BarVisualizer` (voice meter), `useTranscriptions` (live transcript), `useDataChannel` (goal ticks). |
 
-Not used: LiveKit Inference (the app brings its own Gradium and OpenRouter keys), LiveKit Cloud agent hosting (the worker runs in your Docker), telephony/SIP, recording/egress and video.
+Not used: LiveKit Inference (the app brings its own Soniox, Cartesia and Anthropic keys), LiveKit Cloud agent hosting (the worker runs in your Docker), telephony/SIP, recording/egress and video.
 
 ### How the UI talks to the agents
 
@@ -146,19 +146,20 @@ The mic button, the timer and leaving the page are handled entirely in the brows
 
 ### Languages and models
 
-Supported target languages: English, Spanish, German, French. Italian was dropped because Gradium rejects it (`Unsupported language 'it'`, see `voice_agent/scripts/probe_gradium.py`).
+Supported target languages: English, Spanish, German, French. `voice_agent/scripts/probe_speech.py` round-trips a sentence in each through Cartesia and Soniox.
 
-Both the planner and the tutor default to `openai/gpt-5.4-nano` through OpenRouter (minimal reasoning). Override with `PLANNER_MODEL` / `VOICE_LLM_MODEL`; models that accept it get temperature 0.1.
+Both the planner and the tutor default to Claude Haiku 5.5 (`claude-haiku-5-5`) at low effort. Override with `PLANNER_MODEL` / `VOICE_LLM_MODEL`; no temperature is sent, because Claude 5 models reject it.
 
 ## Can anyone run it?
 
-Yes. Nothing in the code is tied to one person's accounts: clone the repo, create your own (free or pay-as-you-go) accounts with the three providers, put the keys in `.env`, and run `docker compose up`. The Gradium voice IDs in `voice_agent/tutor/languages.py` are standard library voices, not custom ones (the English voice is the Gradium plugin's default), so they should work with any key. If your account rejects one, pick another voice in Gradium Studio and change its ID there.
+Yes. Nothing in the code is tied to one person's accounts: clone the repo, create your own (free or pay-as-you-go) accounts with the providers, put the keys in `.env`, and run `docker compose up`. The Cartesia voice (Daniel, `47c38ca4-5f35-497b-b1a3-415245fb35e1`) is a standard library voice that speaks all four languages, so it should work with any key. To change it, pick another in the [Cartesia voice library](https://play.cartesia.ai/voices) and set `TTS_VOICE`.
 
 | Provider | What for | Cost to get started |
 |---|---|---|
 | [LiveKit Cloud](https://cloud.livekit.io) | Real-time audio rooms and agent dispatch | Free Build plan, no credit card. It includes 5,000 WebRTC participant-minutes a month; the learner and the self-hosted tutor both count, so that's roughly 250 ten-minute lessons. |
-| [OpenRouter](https://openrouter.ai) | The LLM for the planner and the tutor | Pay as you go. With the default nano model a plan plus a lesson costs very little; add a few dollars of credit. |
-| [Gradium](https://studio.gradium.ai) | Speech-to-text and text-to-speech | Depends on your Gradium plan. Check its concurrent-session limit: each live lesson holds speech sessions open. |
+| [Anthropic](https://console.anthropic.com) | Claude for the planner and the tutor | Pay as you go. Haiku 5.5 is $0.10 / $0.50 per million tokens, so a plan plus a lesson costs very little. |
+| [Soniox](https://console.soniox.com) | Speech-to-text | Pay as you go; keep a balance, or STT fails with a 402. |
+| [Cartesia](https://play.cartesia.ai) | Text-to-speech | Depends on your Cartesia plan. |
 
 Everything runs on your machine. The voice worker connects *out* to LiveKit Cloud, so there are no ports to open or webhooks to set up, and it works on a laptop behind a home router.
 
@@ -180,13 +181,14 @@ cp .env.example .env
 
 | Variable | Required | Where to get it | Used by |
 |---|---|---|---|
-| `OPENROUTER_API_KEY` | Yes | [openrouter.ai/keys](https://openrouter.ai/keys). Add a little credit; the default nano model is cheap. | planner agents, tutor LLM |
-| `GRADIUM_API_KEY` | Yes | [studio.gradium.ai → API keys](https://studio.gradium.ai/platform/api-keys). Covers speech-to-text and text-to-speech for en, es, de, fr. | voice worker |
+| `CLAUDE_API_KEY` | Yes | [console.anthropic.com → API keys](https://console.anthropic.com/account/keys). `ANTHROPIC_API_KEY` works too. | planner agents, tutor LLM |
+| `SONIOX_API_KEY` | Yes | [console.soniox.com](https://console.soniox.com). Speech-to-text. | voice worker |
+| `CARTESIA_API_KEY` | Yes | [play.cartesia.ai/keys](https://play.cartesia.ai/keys). Text-to-speech. | voice worker |
 | `LIVEKIT_URL` | Yes | [cloud.livekit.io](https://cloud.livekit.io) → your project → Settings. Looks like `wss://<project>.livekit.cloud`. | voice API, voice worker |
 | `LIVEKIT_API_KEY` | Yes | Same project → Settings → API keys → create key. | voice API, voice worker |
 | `LIVEKIT_API_SECRET` | Yes | Shown once when you create the API key. | voice API, voice worker |
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | Yes (defaults provided) | Pick any values; Compose creates the database with them. | postgres, planner |
-| `PLANNER_MODEL` / `VOICE_LLM_MODEL` | No | Any OpenRouter model id, e.g. `openai/gpt-5.4-mini`. Empty means the default. | planner, tutor |
+| `PLANNER_MODEL` / `VOICE_LLM_MODEL` | No | Any Claude model id, e.g. `claude-sonnet-5-5`. Empty means `claude-haiku-5-5`. | planner, tutor |
 | `LANGFUSE_SECRET_KEY` / `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_BASE_URL` | No | [Langfuse](https://cloud.langfuse.com) project settings, for tracing. Empty means no tracing. | planner, tutor |
 
 Tip: with the [LiveKit CLI](https://docs.livekit.io/home/cli/) installed, `lk project list` shows your project URL.
@@ -209,7 +211,7 @@ Every service is set to `pull_policy: build`, so `docker compose up` rebuilds th
 - Reset the database (needed after schema changes in `db/init.sql`): `docker compose down -v`
 - Follow one service: `docker compose logs -f voice-worker`
 
-How many lessons can run at once depends on your Gradium plan's concurrent-session limit. The account used in development allowed 3 sessions, which is enough for one live lesson at a time.
+How many lessons can run at once depends on your Soniox and Cartesia plans' concurrency limits; each live lesson holds one STT and one TTS stream open.
 
 ## Using the app
 
@@ -268,7 +270,7 @@ Open <http://localhost:3000>.
 
 ```bash
 cd lessons_planning_workflow && uv run pytest              # deterministic, needs postgres on :5433
-cd lessons_planning_workflow && RUN_LIVE=1 uv run pytest   # + live persona tests (OpenRouter)
+cd lessons_planning_workflow && RUN_LIVE=1 uv run pytest   # + live persona tests (Anthropic)
 cd voice_agent && RUN_LIVE=1 uv run pytest                 # tutor state + live behaviour tests
 cd frontend && npm test
 ```
@@ -277,8 +279,9 @@ cd frontend && npm test
 
 | Symptom | Likely cause |
 |---|---|
-| "I couldn't prepare your lesson just yet" | The planner can't reach OpenRouter or Postgres. Check `OPENROUTER_API_KEY` and `docker compose logs lesson-planner`. |
+| "I couldn't prepare your lesson just yet" | The planner can't reach Anthropic or Postgres. Check `CLAUDE_API_KEY` and `docker compose logs lesson-planner`. |
 | Lesson screen says "Lumi is taking a while…" | The voice worker isn't connected to LiveKit. Check the three `LIVEKIT_*` values and `docker compose logs voice-worker`. |
-| Lumi joins but never speaks | Gradium rejected the key or hit its concurrent-session limit. Check `GRADIUM_API_KEY` and close other lessons. |
+| Lumi joins but never speaks | Cartesia or Anthropic rejected the key. Check `CARTESIA_API_KEY` / `CLAUDE_API_KEY` and `docker compose logs voice-worker`. |
+| Lumi never hears you | Soniox rejected the key or ran out of balance (402 in the worker log). Check `SONIOX_API_KEY` and your Soniox balance. |
 | "Microphone access is blocked" | Allow the mic for `localhost:3000` in the browser's address bar, then press Start again. |
 | Port 5432/3000 already in use | Postgres is published on 5433 to avoid a local install; stop whatever else uses 3000 or change the `ports` mapping in `docker-compose.yaml`. |

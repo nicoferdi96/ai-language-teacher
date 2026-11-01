@@ -34,7 +34,7 @@ describe("normalizeTargetLanguage", () => {
   it("normalizes case and whitespace", () => {
     expect(normalizeTargetLanguage(" ES ")).toBe("es");
   });
-  it("rejects Italian, which Gradium cannot speak", () => {
+  it("rejects Italian, which the tutor does not teach", () => {
     expect(normalizeTargetLanguage("it")).toBeNull();
   });
 });
