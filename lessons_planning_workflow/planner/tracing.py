@@ -22,7 +22,7 @@ def setup_tracing() -> None:
 
 
 def generation_details(response: RunOutput) -> dict[str, Any]:
-    """Return what the model read and wrote, its tokens and OpenRouter's cost, for a generation."""
+    """Return what the model read and wrote, its tokens and the provider's cost when reported, for a generation."""
     metrics = response.metrics
     usage = {
         "input": metrics.input_tokens if metrics else 0,
