@@ -14,7 +14,7 @@ from planner.models import (
     LessonBriefDraft,
     LessonRecord,
 )
-from planner.tracing import run_traced
+from planner.tracing import ANTHROPIC_TELEMETRY, run_traced
 
 PLANNER_MODEL = os.getenv("PLANNER_MODEL", "claude-haiku-5-5")
 
@@ -22,13 +22,15 @@ PLANNER_MODEL = os.getenv("PLANNER_MODEL", "claude-haiku-5-5")
 def planner_model(model_id: str = PLANNER_MODEL) -> Claude:
     """Return the Anthropic model at low effort with a cached system prompt.
 
-    Haiku 5.5 rejects non-default sampling, so no temperature; thinking stays adaptive.
+    Haiku 5.5 rejects non-default sampling, so no temperature; thinking stays adaptive. The
+    client's own spans are the priced generations in Langfuse (see ``planner.tracing``).
     """
     return Claude(
         id=model_id,
         api_key=os.getenv("ANTHROPIC_API_KEY") or os.getenv("CLAUDE_API_KEY"),
         output_config={"effort": "low"},
         cache_system_prompt=True,
+        client_params={"open_telemetry": ANTHROPIC_TELEMETRY},
     )
 
 
