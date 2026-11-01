@@ -50,6 +50,11 @@ WRAPPER_SPANS = frozenset({"llm_node", "llm_request_run", "tts_node", "tts_reque
 """LiveKit spans around one ``llm_request`` or ``tts_request``. They carry the model name, and
 Langfuse prices any observation with a model, so each call would be counted two or three times."""
 MODEL_ATTRIBUTES = frozenset({"gen_ai.request.model", "gen_ai.response.model"})
+AGENT_SPANS = frozenset({"start_agent_activity"})
+"""LiveKit spans that name the agent's LLM without calling it; they stay agents, without the model."""
+APP_ROOT = "langfuse.internal.is_app_root"
+"""Langfuse's marker for a trace's root observation. Its processor also sets it on each ``on_enter``,
+whose parent ``start_agent_activity`` has already ended, so only ``job_entrypoint`` keeps it."""
 METADATA = "langfuse.observation.metadata."
 
 
@@ -265,8 +270,18 @@ REWRITES: dict[str, Callable[[ReadableSpan], dict[str, AttributeValue]]] = {
 }
 
 
+def without(span: ReadableSpan) -> ReadableSpan:
+    """Return the span without a stray app-root marker or, on an agent span, the model; else the span itself."""
+    drop = (MODEL_ATTRIBUTES if span.name in AGENT_SPANS else set()) | ({APP_ROOT} if span.name != JOB_ROOT else set())
+    attributes = span.attributes or {}
+    if not drop & attributes.keys():
+        return span
+    return with_attributes(span, {key: value for key, value in attributes.items() if key not in drop})
+
+
 def rewrite(span: ReadableSpan) -> ReadableSpan:
-    """Return the span as Langfuse should see it; on a malformed attribute, the span unchanged."""
+    """Return the span as Langfuse should see it; on a malformed attribute, the span without stray markers."""
+    span = without(span)
     if span.name in WRAPPER_SPANS:
         return unpriced(span)
     if (mapping := REWRITES.get(span.name)) is None:
