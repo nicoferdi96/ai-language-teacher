@@ -49,7 +49,8 @@ CREATE TABLE plan_units (
 
 -- One row per ~10-minute lesson. The planner writes it as 'planned'; the
 -- voice tutor moves it to 'in_progress' and then 'completed' or 'abandoned'.
--- objectives: [{"id": "o1", "text": "...", "done": false, "evidence": null}]
+-- goal_aim / goal_prompt drive the tutor for the whole lesson; opening_line is
+-- spoken verbatim (no LLM) when the tutor joins.
 CREATE TABLE lessons (
     lesson_uuid     UUID        PRIMARY KEY,
     user_id         TEXT        NOT NULL,
@@ -57,11 +58,12 @@ CREATE TABLE lessons (
     unit_id         UUID        REFERENCES plan_units(unit_id) ON DELETE SET NULL,
     target_language TEXT        NOT NULL,
     title           TEXT        NOT NULL,
-    lesson_script   TEXT        NOT NULL,
+    goal_aim        TEXT        NOT NULL,
+    goal_prompt     TEXT        NOT NULL,
+    opening_line    TEXT        NOT NULL,
     duration        INTEGER     NOT NULL DEFAULT 10,
     status          TEXT        NOT NULL DEFAULT 'planned'
                                 CHECK (status IN ('planned', 'in_progress', 'completed', 'abandoned')),
-    objectives      JSONB       NOT NULL DEFAULT '[]'::jsonb,
     vocabulary      JSONB       NOT NULL DEFAULT '[]'::jsonb,
     summary         TEXT,
     new_vocabulary  JSONB       NOT NULL DEFAULT '[]'::jsonb,
@@ -71,3 +73,16 @@ CREATE TABLE lessons (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_lessons_user_id ON lessons (user_id, created_at DESC);
+
+-- The ordered steps of a lesson: each one is a task for the learner and the
+-- prompt the voice tutor follows while coaching it. The tutor ticks them off.
+CREATE TABLE lesson_steps (
+    lesson_uuid  UUID        NOT NULL REFERENCES lessons(lesson_uuid) ON DELETE CASCADE,
+    position     SMALLINT    NOT NULL CHECK (position BETWEEN 1 AND 5),
+    task         TEXT        NOT NULL,
+    prompt       TEXT        NOT NULL,
+    done         BOOLEAN     NOT NULL DEFAULT false,
+    evidence     TEXT,
+    completed_at TIMESTAMPTZ,
+    PRIMARY KEY (lesson_uuid, position)
+);

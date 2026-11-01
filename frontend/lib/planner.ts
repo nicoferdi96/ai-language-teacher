@@ -20,7 +20,8 @@ export type LearningPlan = {
   units: PlanUnit[];
 };
 
-export type Objective = { id: string; text: string; done: boolean; evidence: string | null };
+/** One lesson step as the learner sees it: a task they tick off by saying it. */
+export type Step = { position: number; task: string; done: boolean };
 export type VocabularyItem = { term: string; meaning: string };
 
 export type Lesson = {
@@ -29,7 +30,7 @@ export type Lesson = {
   target_language: string;
   title: string;
   status: "planned" | "in_progress" | "completed" | "abandoned";
-  objectives: Objective[];
+  steps: Step[];
   vocabulary: VocabularyItem[];
   summary: string | null;
   new_vocabulary: VocabularyItem[];

@@ -137,7 +137,7 @@ function Today({ lesson, unit }: { lesson: Lesson; unit: PlanUnit | undefined })
       </p>
       <div className="today__goals">
         <h3 className="section-title">You'll be able to</h3>
-        <Goals objectives={lesson.objectives} />
+        <Goals steps={lesson.steps} />
       </div>
     </article>
   );

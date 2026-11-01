@@ -31,7 +31,7 @@ from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 from opentelemetry.util.types import AttributeValue
 from pydantic import ValidationError
 
-from tutor.lesson import LessonPackage
+from tutor.lesson import LessonDispatch
 from tutor.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -48,18 +48,18 @@ MODEL_ATTRIBUTES = frozenset({"gen_ai.request.model", "gen_ai.response.model"})
 METADATA = "langfuse.observation.metadata."
 
 
-def lesson_attributes(package: LessonPackage) -> dict[str, AttributeValue]:
+def lesson_attributes(lesson: LessonDispatch) -> dict[str, AttributeValue]:
     """Return the Langfuse attributes that put a span in the lesson's trace, user and session.
 
     One lesson is one Langfuse session, so a learner who rejoins lands in the same one.
     """
     return {
-        "user.id": package.user_id,
-        "session.id": package.lesson_uuid,
+        "user.id": lesson.user_id,
+        "session.id": lesson.lesson_uuid,
         "langfuse.trace.name": TRACE_NAME,
-        "langfuse.trace.tags": ["voice", package.target_language, package.level],
-        "langfuse.trace.metadata.lesson_title": package.title,
-        "langfuse.trace.metadata.native_language": package.native_language,
+        "langfuse.trace.tags": ["voice", lesson.target_language, lesson.level],
+        "langfuse.trace.metadata.lesson_title": lesson.title,
+        "langfuse.trace.metadata.native_language": lesson.native_language,
     }
 
 
@@ -67,7 +67,7 @@ def lesson_attributes(package: LessonPackage) -> dict[str, AttributeValue]:
 def job_attributes(metadata: str) -> dict[str, AttributeValue]:
     """Return the lesson attributes for a job's dispatch metadata, or none when it holds no lesson."""
     try:
-        return lesson_attributes(LessonPackage.model_validate_json(metadata))
+        return lesson_attributes(LessonDispatch.model_validate_json(metadata))
     except ValidationError:
         return {}
 

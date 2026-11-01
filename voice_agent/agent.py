@@ -1,4 +1,4 @@
-"""Lumi, the voice tutor: the agent, its speech pipeline and the LiveKit server that runs one lesson per job.
+"""Lumi, the voice tutor: the lesson agent, its speech pipeline and the LiveKit server that runs one lesson per job.
 
 Run with ``uv run python agent.py dev`` locally, or ``start`` in production.
 """
@@ -7,6 +7,7 @@ import asyncio
 import logging
 from typing import Any
 
+import psycopg
 from livekit import agents
 from livekit.agents import (
     Agent,
@@ -16,9 +17,7 @@ from livekit.agents import (
     JobContext,
     JobProcess,
     NotGivenOr,
-    RunContext,
     ToolError,
-    function_tool,
     llm,
 )
 from livekit.agents.beta.tools import EndCallTool
@@ -30,10 +29,12 @@ from livekit.plugins import anthropic, cartesia, silero, soniox
 from pydantic import SecretStr
 
 from tutor.languages import LanguageProfile, get_language
-from tutor.lesson import LessonPackage, LessonState, LessonTimer, VocabularyItem
+from tutor.lesson import LessonDispatch, LessonState, LessonTimer
 from tutor.planner import LessonRecorder, PlannerClient
 from tutor.prompt import TutorPrompt
 from tutor.settings import settings
+from tutor.steps import LessonSteps, LessonTimeUp
+from tutor.store import LessonNotFoundError, LessonStore
 from tutor.telemetry import flush_tracing, record_stt_usage, setup_tracing
 from tutor.turn import BALANCED, load_vad, log_turn_metrics, turn_handling, yield_to_caller
 
@@ -41,86 +42,63 @@ logger = logging.getLogger("tutor")
 
 
 class Lumi(Agent):
-    """Single-prompt tutor that runs one planned lesson in one language and ticks off its objectives."""
+    """Runs one planned lesson: says the opening line, coaches each step, then wraps up and ends the call.
+
+    The steps are ``AgentTask``s in a ``TaskGroup`` (``tutor/steps.py``); code, not the model,
+    decides when the lesson is over and what its outcome is.
+    """
+
+    WRAP_UP = (
+        "The lesson is over. In {language} only: give a two-sentence spoken recap of what the "
+        "learner practised today, praise their effort{left}, then say a warm goodbye, "
+        "for example: '{goodbye}'"
+    )
 
     def __init__(self, state: LessonState, recorder: LessonRecorder | None = None):
-        """Build the lesson prompt and tools; without a recorder, progress stays in memory."""
+        """Build the lesson prompt, its steps and the end-call tool; without a recorder, progress stays in memory."""
         self.state = state
-        self.language = get_language(state.package.target_language)
+        self.language = get_language(state.plan.target_language)
         self.recorder = recorder or LessonRecorder(state)
         end_call = EndCallTool(
-            extra_description="Use when the lesson has been completed with complete_lesson, "
-            "or when the learner clearly says they want to stop or leave.",
+            extra_description="Use only when the learner clearly says they want to stop or leave.",
             end_instructions=f"Say a short warm goodbye in {self.language.name} only, "
             f"for example: '{self.language.goodbye}'",
             ignore_on_enter=True,
             on_tool_called=self._on_end_call,
         )
-        super().__init__(instructions=TutorPrompt.build(self.language, state.package), tools=end_call.tools)
+        self.steps = LessonSteps(state, self.language, self.recorder, end_call.tools)
+        super().__init__(instructions=TutorPrompt.agent(self.language, state.plan), tools=end_call.tools)
 
     async def on_enter(self) -> None:
-        """Greet the learner as soon as the tutor joins."""
-        self.session.generate_reply(
-            instructions=f"Greet the learner warmly in {self.language.name}, say in one simple "
-            "sentence what today's lesson is about, and ask one easy personal question."
-        )
-
-    @function_tool()
-    async def mark_objective_done(self, context: RunContext, objective_id: str, evidence: str) -> dict[str, Any]:
-        """Mark a lesson objective as achieved.
-
-        Call only after the learner has said the target language for this objective
-        themselves (at least once correctly, possibly after a correction).
-
-        Args:
-            objective_id: The objective id from the lesson plan, e.g. "o2".
-            evidence: The learner's own words that show the objective is met.
-        """
+        """Say the planned opening line, run the steps until done or time is up, then wrap up."""
+        await self.session.say(self.state.plan.opening_line)
         try:
-            self.state.mark_done(objective_id, evidence)
-        except KeyError:
-            raise ToolError(
-                f"Unknown objective id {objective_id!r}. Valid ids: {[o.id for o in self.state.objectives]}"
-            )
-        self.recorder.objective_done(objective_id, evidence)
-        return self.state.status_facts().model_dump()
+            await self.steps.run(self.chat_ctx.copy(exclude_function_call=True, exclude_instructions=True))
+        except LessonTimeUp:
+            logger.info("Lesson %s ran out of time", self.state.plan.lesson_uuid)
+        except ToolError:
+            # The session closed mid-step (the SDK cancels the running task); shutdown finalizes the lesson.
+            logger.info("Lesson %s closed during a step", self.state.plan.lesson_uuid)
+            return
+        await self.wrap_up()
 
-    @function_tool()
-    async def lesson_status(self, context: RunContext) -> dict[str, Any]:
-        """Return the remaining objectives and the minutes elapsed and left."""
-        return self.state.status_facts().model_dump()
+    async def wrap_up(self) -> None:
+        """Record the outcome, give a spoken recap and goodbye, then end the session."""
+        await self.finalize()
+        left = "" if self.state.all_done() else ", and say you will continue next time"
+        await self.session.generate_reply(
+            instructions=self.WRAP_UP.format(language=self.language.name, left=left, goodbye=self.language.goodbye)
+        )
+        self.session.shutdown()
 
-    @function_tool()
-    async def complete_lesson(
-        self, context: RunContext, summary: str, new_vocabulary: list[VocabularyItem]
-    ) -> dict[str, Any]:
-        """Record the lesson as completed, right before saying goodbye.
-
-        Allowed only when all objectives are done or time is up.
-
-        Args:
-            summary: Two sentences in English: what the learner practised and what to review.
-            new_vocabulary: Words or phrases that came up today, each with a very short
-                meaning in the learner's native language.
-        """
-        if not self.state.can_complete():
-            raise ToolError(
-                "Lesson not finished yet: keep teaching. "
-                f"Status: {self.state.status_facts().model_dump_json()}"
-            )
-        if self.state.finish("completed", summary, new_vocabulary):
-            await self.recorder.finished()
-        return {"recorded": True, "next": "Give a 2-sentence recap, say goodbye, then call end_call."}
-
-    async def finalize(self, summary: str) -> None:
-        """Finish the lesson if still open: completed when all objectives are met, else abandoned."""
-        outcome = "completed" if self.state.all_done() else "abandoned"
-        if self.state.finish(outcome, summary, []):
+    async def finalize(self, summary: str | None = None) -> None:
+        """Finish the lesson if still open: completed when every step is done, else abandoned."""
+        if self.state.finish(summary):
             await self.recorder.finished()
 
     async def _on_end_call(self, _: Any) -> None:
-        """Close the lesson when the call ends without complete_lesson."""
-        await self.finalize(summary="The learner ended the lesson early.")
+        """Close the lesson when the learner leaves before the steps are done."""
+        await self.finalize()
 
 
 def secret(value: SecretStr | None) -> str | None:
@@ -133,7 +111,7 @@ class TutorLLM(anthropic.LLM):
 
     ``AgentSession`` calls ``chat`` without ``extra_kwargs``, so the plugin has no other place for
     these. Adaptive thinking at low effort costs about 0.5 s of first token over thinking off,
-    but with thinking off Haiku 5.5 skipped ``mark_objective_done`` on a correct answer.
+    but with thinking off Haiku 5.5 skipped ticking a goal on a correct answer.
     Claude 5 models reject ``temperature``, so it is dropped even when a caller such as
     LiveKit's ``judge`` adds one.
     """
@@ -226,7 +204,10 @@ def build_session(language: LanguageProfile, vad: silero.VAD) -> AgentSession:
 
 
 def prewarm(proc: JobProcess) -> None:
-    """Load the VAD and start Langfuse tracing once per worker process, before any lesson."""
+    """Load the VAD and start Langfuse tracing once per worker process, before any lesson.
+
+    The lesson's goal and steps are per job, so the entrypoint loads them, alongside ``ctx.connect()``.
+    """
     proc.userdata["vad"] = load_vad()
     proc.userdata["tracer_provider"] = setup_tracing()
 
@@ -236,26 +217,31 @@ server = AgentServer(setup_fnc=prewarm)
 
 @server.rtc_session(agent_name=settings.agent_name)
 async def lesson_entrypoint(ctx: JobContext) -> None:
-    """Run one lesson: the dispatch metadata carries the planner's lesson package."""
-    package = LessonPackage.model_validate_json(ctx.job.metadata)
-    ctx.log_context_fields = {"lesson_uuid": package.lesson_uuid, "user_id": package.user_id}
-    state = LessonState(package=package)
+    """Run one lesson: load its goal and steps from Postgres while joining the room, then teach it."""
+    dispatch = LessonDispatch.model_validate_json(ctx.job.metadata)
+    ctx.log_context_fields = {"lesson_uuid": dispatch.lesson_uuid, "user_id": dispatch.user_id}
+    try:
+        plan, _ = await asyncio.gather(LessonStore().load(dispatch.lesson_uuid), ctx.connect())
+    except (LessonNotFoundError, psycopg.Error):
+        logger.exception("Could not load lesson %s; leaving", dispatch.lesson_uuid)
+        ctx.shutdown(reason="lesson not loaded")
+        return
+    state = LessonState(plan=plan)
     recorder = LessonRecorder(state, PlannerClient(), ctx.room)
     tutor = Lumi(state, recorder)
     session = build_session(tutor.language, ctx.proc.userdata["vad"])
 
-    await ctx.connect()
     try:
         await asyncio.wait_for(ctx.wait_for_participant(), timeout=settings.learner_join_timeout_s)
     except asyncio.TimeoutError:
-        logger.warning("Learner never joined lesson %s; leaving", package.lesson_uuid)
+        logger.warning("Learner never joined lesson %s; leaving", plan.lesson_uuid)
         await recorder.aclose()
         ctx.shutdown(reason="learner never joined")
         return
 
     async def on_shutdown() -> None:
         """Record the lesson as abandoned or completed if it is still open, then its STT usage, then flush traces."""
-        await tutor.finalize(summary="You stopped before the end of the lesson. We'll pick up from here.")
+        await tutor.finalize()
         await recorder.aclose()
         tracer_provider = ctx.proc.userdata.get("tracer_provider")
         record_stt_usage(tracer_provider, session.usage)
@@ -264,7 +250,7 @@ async def lesson_entrypoint(ctx: JobContext) -> None:
     ctx.add_shutdown_callback(on_shutdown)
     await recorder.start()
     await session.start(agent=tutor, room=ctx.room)
-    timer = LessonTimer(session, state).start()
+    timer = LessonTimer(state, on_time_up=tutor.steps.stop).start()
 
     def on_close(_: object) -> None:
         """Stop the timer and end the job so no speech session outlives the learner."""

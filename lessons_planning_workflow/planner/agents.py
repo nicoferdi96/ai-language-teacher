@@ -11,7 +11,7 @@ from planner.models import (
     LearnerProfile,
     LearningPlan,
     LearningPlanDraft,
-    LessonBriefDraft,
+    LessonPlanDraft,
     LessonRecord,
 )
 from planner.tracing import ANTHROPIC_TELEMETRY, run_traced
@@ -60,37 +60,53 @@ Design ONE long-term learning plan for the learner described in the input.
 
 LESSON_INSTRUCTIONS = """\
 You are a Lesson Planner for a voice-first language-learning app. A separate
-voice tutor will run the lesson you design, live, in about 10 minutes.
+voice tutor called Lumi will run the lesson you design, live, in about 10
+minutes. The tutor runs your plan one step at a time: it reads the lesson goal
+for the whole lesson and only the current step's prompt while coaching that
+step.
 
 You receive the learner profile, the learning plan with the status of each
 unit, the focus unit, and the most recent lessons (newest first) with which
-objectives were met and which new words came up.
+steps were met and which new words came up.
 
-Design the NEXT lesson:
+Design the NEXT lesson as a step-by-step plan:
 - Work on the focus unit given in the input; return its position as
   unit_position.
-- If the most recent lesson on that unit was abandoned or left objectives
-  unmet, carry those unmet objectives forward first.
-- 3 to 5 objectives. Each must be small, concrete and checkable from what the
-  learner SAYS, e.g. "Introduce yourself with your name and city" or
-  "Ask for the price using 'combien'". Ten minutes is short: stay realistic
-  for the learner's level.
+- If the most recent lesson on that unit was abandoned or left steps unmet,
+  carry those unmet steps forward first.
+- goal.aim: one sentence, what the learner will be able to SAY at the end.
+- goal.prompt (80-160 words): the thread that ties the steps together, how to
+  adapt to the learner's style and level, and 1-2 typical mistakes speakers of
+  the learner's native language make with this topic (false friends, word
+  order, gender, pronunciation). If recap terms are useful, say where to
+  weave them in.
+- Exactly 5 steps, about two minutes each, building on each other: a short
+  personal warm-up, introducing the new phrases, guided practice, a short
+  role-play, and a quick recap where the learner uses everything once more.
+  - task: small, concrete and checkable from what the learner SAYS, e.g.
+    "Introduce yourself with your name and city" or "Ask for the price using
+    'combien'". Stay realistic for the learner's level.
+  - prompt (40-90 words), written TO the tutor ("Model ...", "Ask the
+    learner to ..."): how to introduce the step, which phrases to model, what
+    to ask the learner to say, and when the step counts as done. The prompt
+    must make sense on its own: the tutor sees only one step's prompt at a
+    time.
+- opening_line: what the tutor says first, spoken word for word: a warm
+  greeting in which Lumi introduces itself by name, today's topic in one
+  simple sentence and one easy personal question. No placeholders. Write it ONLY in the target language, at the learner's level,
+  in at most 3 short sentences, with no markdown or emojis.
 - 5 to 8 vocabulary items in the target language. Each meaning MUST be
   written in the language named in "write_meanings_in" (the learner's native
   language), never in English unless that is the native language.
 - recap_terms: up to 4 terms from previous lessons' new vocabulary or unmet
-  objectives worth a quick review. Empty for a first lesson.
-- tutor_guidelines (in English, 120-250 words): a quick personal warm-up idea,
-  how to introduce each objective with simple examples, one short role-play
-  scenario, and how to adapt to the learner's style and level. Mention 1-2
-  typical mistakes speakers of the learner's native language make with this
-  topic (false friends, word order, gender, pronunciation).
+  steps worth a quick review. Empty for a first lesson.
 - title: short, friendly, English.
 
-Language of your output: title, objectives and tutor_guidelines are ALWAYS in
-English (the app's interface language), quoting target-language phrases inside
-them, e.g. 'Ask for the bill with "La cuenta, por favor"'. Only the vocabulary
-meanings use the language in "write_meanings_in".
+Language of your output: title, goal, step tasks and step prompts are ALWAYS
+in English (the app's interface language), quoting target-language phrases
+inside them, e.g. 'Ask for the bill with "La cuenta, por favor"'. Only the
+opening_line is in the target language, and only the vocabulary meanings use
+the language in "write_meanings_in".
 """
 
 
@@ -126,14 +142,14 @@ class CurriculumAgent:
 
 
 class LessonAgent:
-    """Wraps the Agno agent that reviews progress and designs the next lesson."""
+    """Wraps the Agno agent that reviews progress and designs the next lesson step by step."""
 
     def __init__(self, model_id: str = PLANNER_MODEL):
         self.agent = Agent(
             name="LessonAgent",
             model=planner_model(model_id),
             instructions=LESSON_INSTRUCTIONS,
-            output_schema=LessonBriefDraft,
+            output_schema=LessonPlanDraft,
             markdown=False,
         )
 
@@ -166,8 +182,8 @@ class LessonAgent:
                             None,
                         ),
                         "status": lesson.status,
-                        "objectives_met": [o.text for o in lesson.objectives if o.done],
-                        "objectives_unmet": [o.text for o in lesson.objectives if not o.done],
+                        "steps_met": [step.task for step in lesson.steps if step.done],
+                        "steps_unmet": [step.task for step in lesson.steps if not step.done],
                         "new_vocabulary": [item.term for item in lesson.new_vocabulary],
                         "summary": lesson.summary,
                     }
@@ -180,7 +196,7 @@ class LessonAgent:
 
     async def design(
         self, profile: LearnerProfile, plan: LearningPlan, recent_lessons: list[LessonRecord]
-    ) -> LessonBriefDraft:
-        """Return a structured brief for the next lesson."""
+    ) -> LessonPlanDraft:
+        """Return the step-by-step plan for the next lesson."""
         response = await run_traced(self.agent, self.build_prompt(profile, plan, recent_lessons))
-        return LessonBriefDraft.model_validate(response.content)
+        return LessonPlanDraft.model_validate(response.content)

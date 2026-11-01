@@ -44,6 +44,12 @@ class TutorSettings(BaseSettings):
 
     planner_base_url: str = "http://localhost:8000"
 
+    postgres_user: str = "teacher"
+    postgres_password: SecretStr = SecretStr("change_me")
+    postgres_db: str = "ai_language_teacher"
+    postgres_host: str = Field("localhost", description="``postgres`` inside Compose.")
+    postgres_port: int = Field(5433, description="The host-published port; 5432 inside Compose.")
+
     livekit_url: str | None = None
     livekit_api_key: str | None = None
     livekit_api_secret: SecretStr | None = None
@@ -54,6 +60,15 @@ class TutorSettings(BaseSettings):
         "https://cloud.langfuse.com",
         validation_alias=AliasChoices("langfuse_base_url", "langfuse_host"),
     )
+
+
+    @property
+    def database_url(self) -> str:
+        """The Postgres DSN the worker reads lessons from, built like the planner's."""
+        password = self.postgres_password.get_secret_value()
+        return (
+            f"postgresql://{self.postgres_user}:{password}@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
 
 
 settings = TutorSettings()

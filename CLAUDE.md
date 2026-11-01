@@ -1,6 +1,6 @@
 # Lumi: AI language teacher
 
-Ten-minute spoken lessons with a voice tutor. A learner signs in with an email, answers three onboarding questions, gets a long-term plan, and then talks each lesson through live with Lumi, which ticks off the lesson's goals as they go. Setup, API keys and troubleshooting live in [README.md](README.md).
+Ten-minute spoken lessons with a voice tutor. A learner signs in with an email, answers three onboarding questions, gets a long-term plan, and then talks each lesson through live with Lumi. Each lesson is a goal plus 5 planned steps, and Lumi ticks the steps off as they go. Setup, API keys and troubleshooting live in [README.md](README.md).
 
 ## Run
 
@@ -18,14 +18,15 @@ docker compose up
 | `frontend/` | Next.js app (:3000) | Next 15 App Router, React 19, server actions, plain CSS, `pg` |
 | `lessons_planning_workflow/` | lesson planner (:8000) | FastAPI + Agno (Claude Haiku 5.5), Pydantic models, uv |
 | `voice_agent/api/` | voice API (:8100) | FastAPI, mints LiveKit room tokens |
-| `voice_agent/agent.py` + `voice_agent/tutor/` | voice worker | LiveKit Agents 1.8, Soniox STT, Cartesia TTS, Claude Haiku 5.5 LLM; `agent.py` holds the `Lumi` agent, pipeline, server and entrypoint (`python agent.py dev`); `tutor/` holds lesson models + timer, planner client + recorder, `turn.py` turn-taking, prompt, languages, telemetry, `settings.py` (pydantic-settings, every env var) |
-| `db/init.sql` | Postgres (:5433 on host) | answers, plans, plan units, lessons |
+| `voice_agent/agent.py` + `voice_agent/tutor/` | voice worker | LiveKit Agents 1.8, Soniox STT, Cartesia TTS, Claude Haiku 5.5 LLM. `agent.py` holds the `Lumi` lesson agent, pipeline, server and entrypoint (`python agent.py dev`). `tutor/` holds: lesson models + state + timer (`lesson.py`), one `AgentTask` per step in a `TaskGroup` (`steps.py`), the read-only lesson loader (`store.py`), planner client + recorder, `turn.py` turn-taking, prompts, languages, telemetry, `settings.py` (pydantic-settings, every env var) |
+| `db/init.sql` | Postgres (:5433 on host) | answers, plans, plan units, lessons, lesson steps |
 
-Flow: frontend → planner (`/get_next_lesson/`, `/progress/{user}`) and → voice API (`/api/session` proxies it) → LiveKit dispatches the worker. The worker reports goal ticks over a data channel topic and back to the planner.
+Flow: frontend → planner (`/get_next_lesson/`, `/progress/{user}`) and → voice API (`/api/session` proxies it) → LiveKit dispatches the worker with only the lesson id. The worker loads the goal and steps from Postgres while it joins the room, then reports step ticks over a data channel topic and back to the planner.
 
 ## Rules that are easy to break
 
-- **The planner is the only writer** of plans and lessons. The frontend writes onboarding answers only; the worker records progress through the planner's HTTP API.
+- **The planner is the only writer** of plans and lessons. The frontend writes onboarding answers only. The worker reads `lessons`/`lesson_steps` read-only (`tutor/store.py`) and records progress through the planner's HTTP API.
+- **A lesson is exactly `STEPS_PER_LESSON` (5) steps** (`planner/models.py`, `CHECK` in `db/init.sql`). In the worker each step is a `LessonStepTask` in a `TaskGroup` with `summarize_chat_ctx=False`; steps strip tool calls from the shared history on entry. Code, not the model, decides the outcome (all steps done = completed). Fixed lines (the planner's `opening_line`) go out with `session.say()`, not the LLM.
 - **Target languages are en, es, de, fr only** (`voice_agent/scripts/probe_speech.py` round-trips each). Keep `frontend/lib/languages.ts`, `lessons_planning_workflow/planner/languages.py` and `voice_agent/tutor/languages.py` in sync.
 - **The tutor speaks only the target language.** Don't write UI copy that promises explanations in the learner's native language.
 - **Turn timings live in `voice_agent/tutor/turn.py`**, copied from unmute-core's balanced LiveKit pace (VAD 0.3 s, dynamic endpointing 0.3–1.6 s, adaptive interruption, preemptive generation). Change them only with before/after numbers from the worker's `turn:` log lines.

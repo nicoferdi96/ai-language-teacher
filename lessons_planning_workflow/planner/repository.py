@@ -14,9 +14,11 @@ from planner.models import (
     LearnerProfile,
     LearningPlan,
     LearningPlanDraft,
-    LessonBriefDraft,
     LessonCompletion,
+    LessonGoal,
+    LessonPlanDraft,
     LessonRecord,
+    LessonStep,
     PlanUnit,
     ProgressSnapshot,
 )
@@ -29,8 +31,8 @@ class LessonNotFoundError(LookupError):
     """Raised when a lesson uuid does not exist."""
 
 
-class ObjectiveNotFoundError(LookupError):
-    """Raised when an objective id does not exist on a lesson."""
+class StepNotFoundError(LookupError):
+    """Raised when a step position does not exist on a lesson."""
 
 
 class LearnerRepository:
@@ -40,6 +42,14 @@ class LearnerRepository:
     QUESTION_NATIVE_LANGUAGE = 2
     QUESTION_LEARNING_METHOD = 3
     RECENT_LESSONS = 5
+    LESSON_SELECT = (
+        "SELECT lessons.*, COALESCE(("
+        "SELECT json_agg(json_build_object('position', s.position, 'task', s.task, 'prompt', s.prompt, "
+        "'done', s.done, 'evidence', s.evidence) ORDER BY s.position) "
+        "FROM lesson_steps s WHERE s.lesson_uuid = lessons.lesson_uuid), '[]'::json) AS steps "
+        "FROM lessons "
+    )
+    """Selects lessons with their steps as one JSON array, so a list of lessons is one query."""
 
     def __init__(self, connection_string: str | None = None):
         self.connection_string = connection_string or get_connection_string()
@@ -129,11 +139,11 @@ class LearnerRepository:
         """Return the most recent lessons for a language, newest first."""
         async with self._connect() as conn:
             cur = await conn.execute(
-                "SELECT * FROM lessons WHERE user_id = %s AND target_language = %s "
+                f"{self.LESSON_SELECT}WHERE user_id = %s AND target_language = %s "
                 "ORDER BY created_at DESC LIMIT %s",
                 (user_id, target_language, self.RECENT_LESSONS),
             )
-            return [LessonRecord(**row) for row in await cur.fetchall()]
+            return [self._lesson_from_row(row) for row in await cur.fetchall()]
 
     async def snapshot(self, user_id: str) -> ProgressSnapshot:
         """Return profile, plan, recent lessons and any still-open lesson."""
@@ -148,28 +158,29 @@ class LearnerRepository:
         )
 
     async def create_lesson(
-        self, plan: LearningPlan, unit: PlanUnit, brief: LessonBriefDraft
+        self, plan: LearningPlan, unit: PlanUnit, draft: LessonPlanDraft
     ) -> LessonRecord:
-        """Persist a planned lesson built from the lesson agent's brief."""
+        """Persist a planned lesson and its steps from the lesson agent's plan."""
         lesson = LessonRecord(
             lesson_uuid=uuid.uuid4(),
             user_id=plan.user_id,
             plan_id=plan.plan_id,
             unit_id=unit.unit_id,
             target_language=plan.target_language,
-            title=brief.title,
-            lesson_script=self._tutor_script(brief),
-            objectives=[
-                {"id": f"o{index}", "text": text}
-                for index, text in enumerate(brief.objectives, start=1)
+            title=draft.title,
+            goal=self._goal_with_recap(draft),
+            opening_line=draft.opening_line,
+            steps=[
+                LessonStep(position=position, **step.model_dump())
+                for position, step in enumerate(draft.steps, start=1)
             ],
-            vocabulary=brief.vocabulary,
+            vocabulary=draft.vocabulary,
         )
         async with self._connect() as conn:
             await conn.execute(
                 "INSERT INTO lessons (lesson_uuid, user_id, plan_id, unit_id, target_language, "
-                "title, lesson_script, duration, objectives, vocabulary) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "title, goal_aim, goal_prompt, opening_line, duration, vocabulary) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     lesson.lesson_uuid,
                     lesson.user_id,
@@ -177,12 +188,18 @@ class LearnerRepository:
                     lesson.unit_id,
                     lesson.target_language,
                     lesson.title,
-                    lesson.lesson_script,
+                    lesson.goal.aim,
+                    lesson.goal.prompt,
+                    lesson.opening_line,
                     lesson.duration,
-                    Jsonb([objective.model_dump() for objective in lesson.objectives]),
                     Jsonb([item.model_dump() for item in lesson.vocabulary]),
                 ),
             )
+            async with conn.cursor() as cur:
+                await cur.executemany(
+                    "INSERT INTO lesson_steps (lesson_uuid, position, task, prompt) VALUES (%s, %s, %s, %s)",
+                    [(lesson.lesson_uuid, step.position, step.task, step.prompt) for step in lesson.steps],
+                )
             await conn.execute(
                 "UPDATE plan_units SET status = 'in_progress' WHERE unit_id = %s AND status = 'pending'",
                 (unit.unit_id,),
@@ -191,23 +208,27 @@ class LearnerRepository:
         return lesson
 
     @staticmethod
-    def _tutor_script(brief: LessonBriefDraft) -> str:
-        """Return the tutor guidelines with the recap terms appended."""
-        recap = (
-            f"\n\nQuick recap from earlier lessons: {', '.join(brief.recap_terms)}."
-            if brief.recap_terms
-            else ""
-        )
-        return f"{brief.tutor_guidelines.strip()}{recap}"
+    def _goal_with_recap(draft: LessonPlanDraft) -> LessonGoal:
+        """Return the lesson goal with the recap terms appended to its prompt."""
+        if not draft.recap_terms:
+            return draft.goal
+        recap = f"\n\nQuick recap from earlier lessons: {', '.join(draft.recap_terms)}."
+        return draft.goal.model_copy(update={"prompt": f"{draft.goal.prompt.strip()}{recap}"})
+
+    @staticmethod
+    def _lesson_from_row(row: dict) -> LessonRecord:
+        """Build a lesson from a ``LESSON_SELECT`` row, nesting the goal columns."""
+        goal = LessonGoal(aim=row.pop("goal_aim"), prompt=row.pop("goal_prompt"))
+        return LessonRecord(**row, goal=goal)
 
     async def get_lesson(self, lesson_uuid: uuid.UUID) -> LessonRecord:
-        """Return one lesson or raise LessonNotFoundError."""
+        """Return one lesson with its steps or raise LessonNotFoundError."""
         async with self._connect() as conn:
-            cur = await conn.execute("SELECT * FROM lessons WHERE lesson_uuid = %s", (lesson_uuid,))
+            cur = await conn.execute(f"{self.LESSON_SELECT}WHERE lesson_uuid = %s", (lesson_uuid,))
             row = await cur.fetchone()
         if row is None:
             raise LessonNotFoundError(str(lesson_uuid))
-        return LessonRecord(**row)
+        return self._lesson_from_row(row)
 
     async def start_lesson(self, lesson_uuid: uuid.UUID) -> LessonRecord:
         """Move a planned lesson to in_progress (idempotent) and return it."""
@@ -219,32 +240,27 @@ class LearnerRepository:
             )
         return await self.get_lesson(lesson_uuid)
 
-    async def complete_objective(
-        self, lesson_uuid: uuid.UUID, objective_id: str, evidence: str
-    ) -> LessonRecord:
-        """Mark one objective done with evidence; unchanged if already done."""
-        lesson = await self.get_lesson(lesson_uuid)
-        if objective_id not in {objective.id for objective in lesson.objectives}:
-            raise ObjectiveNotFoundError(objective_id)
-        objectives = [
-            objective.model_copy(update={"done": True, "evidence": evidence})
-            if objective.id == objective_id and not objective.done
-            else objective
-            for objective in lesson.objectives
-        ]
+    async def complete_step(self, lesson_uuid: uuid.UUID, position: int, evidence: str) -> LessonRecord:
+        """Mark one step done with evidence; a step already done keeps its first evidence."""
         async with self._connect() as conn:
-            await conn.execute(
-                "UPDATE lessons SET objectives = %s, updated_at = now() WHERE lesson_uuid = %s",
-                (Jsonb([objective.model_dump() for objective in objectives]), lesson_uuid),
+            cur = await conn.execute(
+                "UPDATE lesson_steps SET evidence = CASE WHEN done THEN evidence ELSE %s END, "
+                "done = true, completed_at = COALESCE(completed_at, now()) "
+                "WHERE lesson_uuid = %s AND position = %s",
+                (evidence, lesson_uuid, position),
             )
-        return lesson.model_copy(update={"objectives": objectives})
+            updated = cur.rowcount
+        lesson = await self.get_lesson(lesson_uuid)
+        if not updated:
+            raise StepNotFoundError(str(position))
+        return lesson
 
     async def finish_lesson(
         self, lesson_uuid: uuid.UUID, completion: LessonCompletion
     ) -> LessonRecord:
-        """Close a lesson and, when every objective is met, mark its unit done."""
+        """Close a lesson and, when every step is done, mark its unit done."""
         lesson = await self.get_lesson(lesson_uuid)
-        all_done = all(objective.done for objective in lesson.objectives)
+        all_done = all(step.done for step in lesson.steps)
         async with self._connect() as conn:
             await conn.execute(
                 "UPDATE lessons SET status = %s, summary = %s, new_vocabulary = %s, "
@@ -262,7 +278,7 @@ class LearnerRepository:
                     (lesson.unit_id,),
                 )
         logger.info(
-            "Lesson %s finished as %s (all objectives done: %s)",
+            "Lesson %s finished as %s (all steps done: %s)",
             lesson_uuid,
             completion.status,
             all_done,

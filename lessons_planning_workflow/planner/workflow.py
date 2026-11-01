@@ -80,15 +80,15 @@ class LessonPlanningWorkflow:
             lesson = snapshot.open_lesson
             logger.info("Reusing open lesson %s", lesson.lesson_uuid)
         else:
-            brief = await self.lesson_agent.design(snapshot.profile, plan, snapshot.recent_lessons)
+            draft = await self.lesson_agent.design(snapshot.profile, plan, snapshot.recent_lessons)
             focus = plan.next_unit() or plan.units[-1]
             unit = next(
-                (candidate for candidate in plan.units if candidate.position == brief.unit_position),
+                (candidate for candidate in plan.units if candidate.position == draft.unit_position),
                 focus,
             )
-            recap = self.recap_terms(snapshot.recent_lessons, brief.recap_terms)
+            recap = self.recap_terms(snapshot.recent_lessons, draft.recap_terms)
             lesson = await self.repository.create_lesson(
-                plan, unit, brief.model_copy(update={"recap_terms": recap})
+                plan, unit, draft.model_copy(update={"recap_terms": recap})
             )
         unit = next((candidate for candidate in plan.units if candidate.unit_id == lesson.unit_id), None)
         package = LessonPackage(

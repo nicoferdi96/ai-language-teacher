@@ -14,9 +14,9 @@ from planner.models import (
     LessonCompletion,
     LessonPackage,
     LessonRecord,
-    ObjectiveUpdate,
+    StepUpdate,
 )
-from planner.repository import LearnerRepository, LessonNotFoundError, ObjectiveNotFoundError
+from planner.repository import LearnerRepository, LessonNotFoundError, StepNotFoundError
 from planner.tracing import setup_tracing
 from planner.workflow import LessonPlanningWorkflow
 
@@ -95,14 +95,12 @@ async def start_lesson(lesson_uuid: uuid.UUID) -> LessonRecord:
         raise HTTPException(status_code=404, detail="Lesson not found")
 
 
-@app.post("/lessons/{lesson_uuid}/objectives/{objective_id}")
-async def complete_objective(
-    lesson_uuid: uuid.UUID, objective_id: str, update: ObjectiveUpdate
-) -> LessonRecord:
-    """Mark one lesson objective as achieved."""
+@app.post("/lessons/{lesson_uuid}/steps/{position}")
+async def complete_step(lesson_uuid: uuid.UUID, position: int, update: StepUpdate) -> LessonRecord:
+    """Mark one lesson step as done."""
     try:
-        return await repository.complete_objective(lesson_uuid, objective_id, update.evidence)
-    except (LessonNotFoundError, ObjectiveNotFoundError) as error:
+        return await repository.complete_step(lesson_uuid, position, update.evidence)
+    except (LessonNotFoundError, StepNotFoundError) as error:
         raise HTTPException(status_code=404, detail=f"Not found: {error}")
 
 

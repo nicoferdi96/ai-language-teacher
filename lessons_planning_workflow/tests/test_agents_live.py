@@ -8,7 +8,7 @@ from agno.agent import Agent
 from pydantic import BaseModel
 
 from planner.agents import planner_model
-from planner.models import LessonCompletion, VocabularyItem
+from planner.models import STEPS_PER_LESSON, LessonCompletion, VocabularyItem
 from planner.workflow import LessonPlanningWorkflow
 
 pytestmark = pytest.mark.live
@@ -64,16 +64,21 @@ async def test_beginner_conversation_spanish_native_italian(workflow, learners, 
     assert plan.level == "A1"
     assert 8 <= len(plan.units) <= 12
     assert sum(unit.kind == "conversation" for unit in plan.units) >= len(plan.units) // 2
-    assert 3 <= len(package.lesson.objectives) <= 5
+    assert len(package.lesson.steps) == STEPS_PER_LESSON
     verdict = await judge.check(
         "Every 'meaning' is written in Italian (not English), and every 'term' is Spanish.",
         [item.model_dump() for item in package.lesson.vocabulary],
     )
     assert verdict.passed, verdict.reason
     verdict = await judge.check(
-        "The title and every objective are written in English (they may quote Spanish phrases), "
-        "not in Italian.",
-        {"title": package.lesson.title, "objectives": [o.text for o in package.lesson.objectives]},
+        "The title, the goal and every step task and prompt are written in English (they may "
+        "quote Spanish phrases), not in Italian.",
+        package.lesson.model_dump(include={"title", "goal", "steps"}),
+    )
+    assert verdict.passed, verdict.reason
+    verdict = await judge.check(
+        "The text is a short, warm greeting with one easy question, written only in simple Spanish.",
+        package.lesson.opening_line,
     )
     assert verdict.passed, verdict.reason
 
@@ -105,15 +110,15 @@ async def test_prior_knowledge_french_not_a1(workflow, learners, judge):
         plan.model_dump(include={"level", "goal_summary", "units"}),
     )
     assert verdict.passed, verdict.reason
-    assert package.lesson.objectives
+    assert len(package.lesson.steps) == STEPS_PER_LESSON
 
 
 async def test_returning_learner_gets_next_unit_with_recap(workflow, learners, judge):
     user_id = await learners.create("en", "German", "Practical everyday English, beginner")
     first = await workflow.run(user_id)
     [
-        await workflow.repository.complete_objective(first.lesson.lesson_uuid, o.id, "done")
-        for o in first.lesson.objectives
+        await workflow.repository.complete_step(first.lesson.lesson_uuid, step.position, "done")
+        for step in first.lesson.steps
     ]
     await workflow.repository.finish_lesson(
         first.lesson.lesson_uuid,
@@ -133,14 +138,14 @@ async def test_returning_learner_gets_next_unit_with_recap(workflow, learners, j
     assert second.unit.position > first.unit.position
     verdict = await judge.check(
         "The new lesson has a different main topic from the previous lesson title, and its "
-        "tutor guidance mentions reviewing at least one previous word ('nice to meet you' or "
+        "goal or steps mention reviewing at least one previous word ('nice to meet you' or "
         "'neighbour'). A short review of old words is desired and is NOT repetition.",
-        {"previous_title": first.lesson.title, "new": second.lesson.model_dump(include={"title", "lesson_script", "objectives"})},
+        {"previous_title": first.lesson.title, "new": second.lesson.model_dump(include={"title", "goal", "steps"})},
     )
     assert verdict.passed, verdict.reason
 
 
-async def test_abandoned_lesson_carries_unmet_objectives(workflow, learners, judge):
+async def test_abandoned_lesson_carries_unmet_steps(workflow, learners, judge):
     user_id = await learners.create("es", "English", None)
     first = await workflow.run(user_id)
     await workflow.repository.finish_lesson(
@@ -151,15 +156,15 @@ async def test_abandoned_lesson_carries_unmet_objectives(workflow, learners, jud
 
     assert second.unit.position == first.unit.position
     verdict = await judge.check(
-        "Every objective is written in English (quoted Spanish phrases are fine).",
-        [o.text for o in second.lesson.objectives],
+        "Every step task is written in English (quoted Spanish phrases are fine).",
+        [step.task for step in second.lesson.steps],
     )
     assert verdict.passed, verdict.reason
     verdict = await judge.check(
-        "The NEW lesson's objectives substantially cover the PREVIOUS unmet objectives.",
+        "The NEW lesson's steps substantially cover the PREVIOUS unmet steps.",
         {
-            "previous_unmet": [o.text for o in first.lesson.objectives],
-            "new_objectives": [o.text for o in second.lesson.objectives],
+            "previous_unmet": [step.task for step in first.lesson.steps],
+            "new_steps": [step.task for step in second.lesson.steps],
         },
     )
     assert verdict.passed, verdict.reason
