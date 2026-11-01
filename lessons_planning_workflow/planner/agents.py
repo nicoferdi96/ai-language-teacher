@@ -20,16 +20,17 @@ PLANNER_MODEL = os.getenv("PLANNER_MODEL", "claude-haiku-5-5")
 
 
 def planner_model(model_id: str = PLANNER_MODEL) -> Claude:
-    """Return the Anthropic model at low effort with a cached system prompt.
+    """Return the Anthropic model at low effort.
 
-    Haiku 5.5 rejects non-default sampling, so no temperature; thinking stays adaptive. The
-    client's own spans are the priced generations in Langfuse (see ``planner.tracing``).
+    Haiku 5.5 rejects non-default sampling, so no temperature; thinking stays adaptive. No
+    prompt caching: each agent runs once per lesson request, so a cache write (1.25x the input
+    price) would almost never be read back within its 5-minute lifetime. The client's own
+    spans are the priced generations in Langfuse (see ``planner.tracing``).
     """
     return Claude(
         id=model_id,
         api_key=os.getenv("ANTHROPIC_API_KEY") or os.getenv("CLAUDE_API_KEY"),
         output_config={"effort": "low"},
-        cache_system_prompt=True,
         client_params={"open_telemetry": ANTHROPIC_TELEMETRY},
     )
 

@@ -39,8 +39,10 @@ def test_failed_run_is_an_error():
     assert details["status_message"] == "Overloaded"
 
 
-def test_planner_model_sends_its_prompts_to_the_sdk_spans():
-    assert planner_model().client_params == {"open_telemetry": ANTHROPIC_TELEMETRY}
+def test_planner_model_sends_its_prompts_to_the_sdk_spans_and_writes_no_prompt_cache():
+    model = planner_model()
+    assert model.client_params == {"open_telemetry": ANTHROPIC_TELEMETRY}
+    assert not model.cache_system_prompt
 
 
 class RecordingClient:
