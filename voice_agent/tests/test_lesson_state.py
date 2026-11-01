@@ -1,10 +1,12 @@
 """Deterministic tests for lesson state, prompt and recorder (no model)."""
 
+from types import SimpleNamespace
+
 import pytest
 
-from tutor.agent import LessonRecorder
 from tutor.languages import LANGUAGES, get_language
-from tutor.lesson import LessonPackage, LessonState, NextLessonResponse, VocabularyItem
+from tutor.lesson import LessonPackage, LessonState, NextLessonResponse, ProgressEvent, VocabularyItem
+from tutor.planner import LessonRecorder
 from tutor.prompt import TutorPrompt
 
 from conftest import make_package
@@ -28,6 +30,19 @@ class FakePlanner:
         self.calls.append(("finish", state.outcome))
         if self.fail:
             raise RuntimeError("planner down")
+
+
+class FakeRoom:
+    """Collects the progress events the recorder publishes."""
+
+    def __init__(self):
+        self.events: list[str] = []
+        self.local_participant = SimpleNamespace(publish_data=self.publish_data)
+
+    async def publish_data(self, payload, reliable, topic):
+        """Record the payload sent on the progress topic."""
+        assert topic == "lesson-progress"
+        self.events.append(ProgressEvent.model_validate_json(payload))
 
 
 def test_mark_done_is_idempotent_and_keeps_first_evidence(state):
@@ -103,12 +118,8 @@ def test_unsupported_language_is_rejected():
 
 
 async def test_recorder_resends_objectives_then_outcome(state):
-    planner, events = FakePlanner(), []
-
-    async def publish(event):
-        events.append(event)
-
-    recorder = LessonRecorder(state, planner, publish)
+    planner, room = FakePlanner(), FakeRoom()
+    recorder = LessonRecorder(state, planner, room)
     state.mark_done("o2", "Soy de Roma")
     recorder.objective_done("o2", "Soy de Roma")
     state.finish("abandoned", "left", [VocabularyItem(term="hola", meaning="ciao")])
@@ -119,17 +130,13 @@ async def test_recorder_resends_objectives_then_outcome(state):
         ("objective", "o2", "Soy de Roma"),
         ("finish", "abandoned"),
     ]
-    assert events[-1].outcome == "abandoned"
+    assert room.events[-1].outcome == "abandoned"
 
 
 async def test_recorder_swallows_planner_failures(state):
-    events = []
-
-    async def publish(event):
-        events.append(event)
-
-    recorder = LessonRecorder(state, FakePlanner(fail=True), publish)
+    room = FakeRoom()
+    recorder = LessonRecorder(state, FakePlanner(fail=True), room)
     state.finish("completed", "ok", [])
     await recorder.finished()
 
-    assert events and events[-1].outcome == "completed"
+    assert room.events and room.events[-1].outcome == "completed"

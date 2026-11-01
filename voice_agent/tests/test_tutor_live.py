@@ -7,10 +7,9 @@ import pytest
 from livekit.agents import AgentSession, ChatContext
 from livekit.plugins import openai
 
-from tutor.agent import TutorAgent
+from agent import Lumi, build_llm
 from tutor.languages import get_language
 from tutor.lesson import LessonState
-from tutor.session import build_llm
 
 from conftest import make_package
 
@@ -23,7 +22,7 @@ JUDGE_MODEL = os.getenv("JUDGE_MODEL", "openai/gpt-4.1-mini")
 async def tutor_session(language: str = "es", history: list[tuple[str, str]] | None = None, **overrides):
     """Start a text-mode session with the tutor; yields (session, agent, judge_llm)."""
     state = LessonState(package=make_package(language, **overrides))
-    agent = TutorAgent(get_language(language), state)
+    agent = Lumi(state)
     async with (
         openai.LLM.with_openrouter(model=JUDGE_MODEL) as judge,
         build_llm() as llm,
