@@ -1,4 +1,4 @@
-"""Live behaviour tests: real tutor LLM via OpenRouter, text mode, judged where needed.
+"""Live behaviour tests: real tutor LLM (Claude), text mode, judged where needed.
 
 The session starts the lesson agent, which says the opening line and hands over to the first
 step task, so every ``session.run`` below talks to a step of the TaskGroup.
@@ -10,18 +10,18 @@ from contextlib import asynccontextmanager
 
 import pytest
 from livekit.agents import AgentSession
-from livekit.plugins import openai
 
-from agent import Lumi, build_llm
+from agent import Lumi, TutorLLM, build_llm, secret
 from tutor.languages import get_language
 from tutor.lesson import LessonState
+from tutor.settings import settings
 from tutor.steps import LessonStepTask
 
 from conftest import make_plan
 
 pytestmark = pytest.mark.live
 
-JUDGE_MODEL = os.getenv("JUDGE_MODEL", "openai/gpt-4.1-mini")
+JUDGE_MODEL = os.getenv("JUDGE_MODEL", "claude-haiku-5-5")
 TASK_SWITCH_S = 0.5
 """TaskGroup swaps the active task without an LLM for a moment; the docs advise a short wait."""
 
@@ -31,7 +31,7 @@ async def tutor_session(language: str = "es", **overrides):
     """Start a text-mode lesson; yields (session, agent, judge_llm) once the first step is active."""
     agent = Lumi(LessonState(plan=make_plan(language, **overrides)))
     async with (
-        openai.LLM.with_openrouter(model=JUDGE_MODEL) as judge,
+        TutorLLM(model=JUDGE_MODEL, api_key=secret(settings.anthropic_api_key), effort="medium") as judge,
         build_llm() as llm,
         AgentSession(llm=llm) as session,
     ):
@@ -78,7 +78,8 @@ async def test_replies_only_in_target_language(language):
         await result.expect.next_event(type="message").judge(
             judge,
             intent=f"Is written entirely in {name} (no other language), uses short simple "
-            "sentences suitable for a beginner, and ends with a question or invitation to speak.",
+            "sentences suitable for a beginner, and ends by handing the turn to the learner: a "
+            "question, or a prompt to say or repeat something.",
         )
 
 
@@ -130,6 +131,7 @@ async def test_learner_can_go_back_to_an_earlier_step():
         await asyncio.sleep(TASK_SWITCH_S)
 
         result.expect.contains_function_call(name="out_of_scope")
+        assert "complete_step" not in tool_calls(result), "the revisited step reused the old answer"
         assert current_step(session).step.position == 1
 
 
@@ -162,8 +164,9 @@ async def test_steers_off_topic_learner_back():
 
         await result.expect.next_event(type="message").judge(
             judge,
-            intent="Answers in Spanish only, briefly and kindly, and steers back to "
-            "introducing yourself (e.g. asks the learner's name).",
+            intent="Answers in Spanish only, without a long lecture, and steers back to "
+            "introducing yourself: for example asks the learner's name or asks them to say "
+            "'Me llamo...' with their name.",
         )
 
 

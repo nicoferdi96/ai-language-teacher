@@ -1,6 +1,11 @@
-"""Langfuse tracing: one trace per lesson request, one generation per agent run.
+"""Langfuse tracing: one trace per lesson request, one agent observation per agent run.
 
-Without ``LANGFUSE_PUBLIC_KEY`` and ``LANGFUSE_SECRET_KEY`` every observation is a no-op.
+The Anthropic SDK traces each API call itself (``anthropic.messages.create``, exported by
+Langfuse's default filter) with the model, effort, max tokens and usage including cache
+writes, so that span is the generation Langfuse prices. The agent observation around it holds
+what the agent read and returned and the run's status, and carries no model: with one, every
+call would be priced twice. Without ``LANGFUSE_PUBLIC_KEY`` and ``LANGFUSE_SECRET_KEY`` every
+observation is a no-op.
 """
 
 import os
@@ -8,11 +13,14 @@ from typing import Any
 
 from agno.agent import Agent
 from agno.run.agent import RunOutput
+from agno.run.base import RunStatus
 from langfuse import Langfuse, get_client
 
 TRACE_NAME = "lesson-planning"
 INGESTION_V4 = {"x-langfuse-ingestion-version": "4"}
 """Langfuse v4 processes spans in real time only with this header."""
+ANTHROPIC_TELEMETRY = {"traces": {"content_mode": "content"}}
+"""The Anthropic client's ``open_telemetry`` option: its spans carry the prompt and reply, not only metadata."""
 
 
 def setup_tracing() -> None:
@@ -21,31 +29,42 @@ def setup_tracing() -> None:
         Langfuse(additional_headers=INGESTION_V4)
 
 
-def generation_details(response: RunOutput) -> dict[str, Any]:
-    """Return what the model read and wrote, its tokens and OpenRouter's cost, for a generation."""
+def run_details(response: RunOutput) -> dict[str, Any]:
+    """Return what the agent read and returned, with its run's status and timing, for its observation."""
     metrics = response.metrics
-    usage = {
-        "input": metrics.input_tokens if metrics else 0,
-        "output": metrics.output_tokens if metrics else 0,
-    }
-    return {
-        "model": response.model,
+    details: dict[str, Any] = {
         "input": [
             {"role": message.role, "content": message.content}
             for message in response.messages or []
             if message.role in ("system", "user")
         ],
         "output": response.content,
-        "usage_details": usage,
-        "cost_details": {"total": metrics.cost} if metrics and metrics.cost is not None else None,
+        "metadata": {
+            "run_id": response.run_id,
+            "status": response.status.value,
+            "duration": metrics.duration if metrics else None,
+            "ttft": metrics.time_to_first_token if metrics else None,
+        },
     }
+    if response.status == RunStatus.error:
+        details["level"] = "ERROR"
+        details["status_message"] = str(response.content)
+    return details
 
 
 async def run_traced(agent: Agent, prompt: str) -> RunOutput:
-    """Run an Agno agent inside a Langfuse generation named after it."""
+    """Run an Agno agent inside a Langfuse agent observation named after it.
+
+    An exception from the run marks the observation as an error through its span status.
+    """
     with get_client().start_as_current_observation(
-        as_type="generation", name=agent.name or "agent", model=agent.model.id if agent.model else None
-    ) as generation:
+        as_type="agent",
+        name=agent.name or "agent",
+        metadata={
+            "model": agent.model.id if agent.model else None,
+            "output_schema": getattr(agent.output_schema, "__name__", None),
+        },
+    ) as observation:
         response = await agent.arun(prompt)
-        generation.update(**generation_details(response))
+        observation.update(**run_details(response))
     return response

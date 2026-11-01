@@ -159,6 +159,14 @@ def test_step_prompt_carries_only_its_own_coaching():
     assert plan.goal.prompt in prompt
 
 
+def test_revisited_step_prompt_discounts_earlier_answers():
+    plan = make_plan("es")
+    language = get_language("es")
+
+    assert "does not count" not in TutorPrompt.step(language, plan, plan.steps[0])
+    assert "does not count" in TutorPrompt.step(language, plan, plan.steps[0], revisit=True)
+
+
 def test_unsupported_language_is_rejected():
     with pytest.raises(ValueError):
         get_language("it")

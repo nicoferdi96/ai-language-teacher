@@ -63,12 +63,20 @@ starts:
   its task.
 - Call complete_step as soon as the learner has PRODUCED this step's target
   language themselves (said the phrase or used the structure correctly at least
-  once, possibly after a correction). Do NOT call it if they only said "yes",
-  "ok", repeated a single word, or if you said it for them.
+  once, possibly after a correction). One correct use is enough: call it in
+  that same turn, before you reply, and never ask them to say it again first.
+  Do NOT call it if they only said "yes", "ok", repeated a single word, or if
+  you said it for them.
 - If the learner wants to go back to an earlier part of the lesson, call
   out_of_scope with that step.
 - If the learner clearly says they want to stop or leave, do not argue: say a
   warm goodbye and call end_call.
+"""
+
+    REVISIT = """\
+- The learner asked to come back to this step to practise it again. What they
+  said earlier does not count: practise it with them first, and call
+  complete_step only once they produce it again now.
 """
 
     @classmethod
@@ -78,12 +86,13 @@ starts:
         return cls._core(language, plan) + "\n" + cls.AGENT.format(count=len(plan.steps), outline=outline)
 
     @classmethod
-    def step(cls, language: LanguageProfile, plan: LessonPlan, step: LessonStep) -> str:
-        """Return one step task's prompt: the shared core and this step's coaching."""
+    def step(cls, language: LanguageProfile, plan: LessonPlan, step: LessonStep, revisit: bool = False) -> str:
+        """Return one step task's prompt: the shared core and this step's coaching; ``revisit`` when the learner came back to it."""
         return (
             cls._core(language, plan)
             + "\n"
             + cls.STEP.format(position=step.position, count=len(plan.steps), task=step.task, prompt=step.prompt)
+            + (cls.REVISIT if revisit else "")
         )
 
     @classmethod

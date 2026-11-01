@@ -1,12 +1,12 @@
-"""Turn-taking settings, interim transcript joining and yield-to-caller, without a room."""
+"""Turn-taking settings and yield-to-caller, without a room."""
 
 from types import SimpleNamespace
 
 import pytest
-from livekit.agents import AgentStateChangedEvent, UserStateChangedEvent, inference, stt
+from livekit.agents import AgentStateChangedEvent, UserStateChangedEvent, inference
 from pydantic import ValidationError
 
-from tutor.turn import BALANCED, InterimJoiner, TurnWindow, turn_handling, yield_to_caller
+from tutor.turn import BALANCED, TurnWindow, turn_handling, yield_to_caller
 
 
 def test_turn_handling_uses_unmute_balanced_pace():
@@ -22,22 +22,6 @@ def test_turn_handling_uses_unmute_balanced_pace():
 def test_turn_window_rejects_a_vad_floor_the_detector_refuses():
     with pytest.raises(ValidationError):
         TurnWindow(vad_silence=0.2, min_delay=0.3, max_delay=1.6)
-
-
-def speech(kind: stt.SpeechEventType, text: str = "") -> stt.SpeechEvent:
-    return stt.SpeechEvent(type=kind, alternatives=[stt.SpeechData(language="es", text=text)])
-
-
-def test_interims_become_the_line_so_far_and_reset_after_final():
-    joiner, interim, final = InterimJoiner(), stt.SpeechEventType.INTERIM_TRANSCRIPT, stt.SpeechEventType.FINAL_TRANSCRIPT
-
-    texts = [joiner.push(speech(interim, word)).alternatives[0].text for word in ["Me", " llamo ", "Ana"]]
-    final_text = joiner.push(speech(final, "Me llamo Ana")).alternatives[0].text
-    after = joiner.push(speech(interim, "Soy")).alternatives[0].text
-
-    assert texts == ["Me", "Me llamo", "Me llamo Ana"]
-    assert final_text == "Me llamo Ana"
-    assert after == "Soy"
 
 
 class FakeSpeech:

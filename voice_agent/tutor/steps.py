@@ -95,12 +95,14 @@ class LessonSteps:
         """Create the task for a step; the group calls this again when the learner goes back to it.
 
         The opening step stays quiet on its first entry: the learner is answering the opening line.
+        A revisited step is told that earlier answers don't count, so it practises before ticking.
         """
+        revisit = step.position in self._entered
         task = LessonStepTask(
             step,
-            instructions=TutorPrompt.step(self._language, self._state.plan, step),
+            instructions=TutorPrompt.step(self._language, self._state.plan, step, revisit=revisit),
             tools=list(self._tools),
-            introduce=step.position != self._opening_step or step.position in self._entered,
+            introduce=step.position != self._opening_step or revisit,
         )
         self._entered.add(step.position)
         self._current = task

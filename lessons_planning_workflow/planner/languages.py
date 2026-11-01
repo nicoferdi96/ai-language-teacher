@@ -1,4 +1,4 @@
-"""Target languages the platform teaches (all backed by Gradium STT/TTS)."""
+"""Target languages the platform teaches (all backed by Soniox STT and Cartesia TTS)."""
 
 SUPPORTED_LANGUAGES: dict[str, str] = {
     "en": "English",

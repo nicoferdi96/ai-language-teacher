@@ -88,5 +88,5 @@ def pytest_collection_modifyitems(config, items):
     """Skip live LLM tests unless RUN_LIVE=1."""
     if os.getenv("RUN_LIVE") == "1":
         return
-    skip = pytest.mark.skip(reason="set RUN_LIVE=1 to call OpenRouter")
+    skip = pytest.mark.skip(reason="set RUN_LIVE=1 to call Anthropic")
     [item.add_marker(skip) for item in items if "live" in item.keywords]

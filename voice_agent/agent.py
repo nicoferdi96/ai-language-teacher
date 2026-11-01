@@ -5,11 +5,10 @@ Run with ``uv run python agent.py dev`` locally, or ``start`` in production.
 
 import asyncio
 import logging
-from collections.abc import AsyncIterable, AsyncIterator
 from typing import Any
 
 import psycopg
-from livekit import agents, rtc
+from livekit import agents
 from livekit.agents import (
     Agent,
     AgentServer,
@@ -17,13 +16,17 @@ from livekit.agents import (
     APIConnectOptions,
     JobContext,
     JobProcess,
-    ModelSettings,
+    NotGivenOr,
     ToolError,
-    stt,
+    llm,
 )
 from livekit.agents.beta.tools import EndCallTool
+from livekit.agents.types import DEFAULT_API_CONNECT_OPTIONS, NOT_GIVEN
+from livekit.agents.utils import is_given
 from livekit.agents.voice.agent_session import SessionConnectOptions
-from livekit.plugins import gradium, openai, silero
+from livekit.plugins import anthropic, cartesia, silero, soniox
+
+from pydantic import SecretStr
 
 from tutor.languages import LanguageProfile, get_language
 from tutor.lesson import LessonDispatch, LessonState, LessonTimer
@@ -32,12 +35,10 @@ from tutor.prompt import TutorPrompt
 from tutor.settings import settings
 from tutor.steps import LessonSteps, LessonTimeUp
 from tutor.store import LessonNotFoundError, LessonStore
-from tutor.telemetry import flush_tracing, setup_tracing
-from tutor.turn import BALANCED, InterimJoiner, load_vad, log_turn_metrics, turn_handling, yield_to_caller
+from tutor.telemetry import flush_tracing, record_stt_usage, setup_tracing
+from tutor.turn import BALANCED, load_vad, log_turn_metrics, turn_handling, yield_to_caller
 
 logger = logging.getLogger("tutor")
-
-REASONING_MODEL_PREFIXES = ("openai/gpt-5", "openai/gpt-6", "openai/o")
 
 
 class Lumi(Agent):
@@ -90,14 +91,6 @@ class Lumi(Agent):
         )
         self.session.shutdown()
 
-    async def stt_node(
-        self, audio: AsyncIterable[rtc.AudioFrame], model_settings: ModelSettings
-    ) -> AsyncIterator[stt.SpeechEvent]:
-        """Default STT, with Gradium's per-word interims joined into the line so far."""
-        joiner = InterimJoiner()
-        async for event in Agent.default.stt_node(self, audio, model_settings):
-            yield joiner.push(event)
-
     async def finalize(self, summary: str | None = None) -> None:
         """Finish the lesson if still open: completed when every step is done, else abandoned."""
         if self.state.finish(summary):
@@ -108,26 +101,102 @@ class Lumi(Agent):
         await self.finalize()
 
 
-def build_llm(model: str = settings.voice_llm_model) -> openai.LLM:
-    """Return the OpenRouter LLM: minimal reasoning for reasoning models, else low temperature."""
-    options: dict[str, Any] = (
-        {"reasoning_effort": "minimal"}
-        if model.startswith(REASONING_MODEL_PREFIXES)
-        else {"temperature": settings.voice_llm_temperature}
+def secret(value: SecretStr | None) -> str | None:
+    """Return a configured key, or None so the plugin falls back to its own env var."""
+    return value.get_secret_value() if value else None
+
+
+class TutorLLM(anthropic.LLM):
+    """Claude with a fixed effort and thinking mode on every request.
+
+    ``AgentSession`` calls ``chat`` without ``extra_kwargs``, so the plugin has no other place for
+    these. Adaptive thinking at low effort costs about 0.5 s of first token over thinking off,
+    but with thinking off Haiku 5.5 skipped ticking a goal on a correct answer.
+    Claude 5 models reject ``temperature``, so it is dropped even when a caller such as
+    LiveKit's ``judge`` adds one.
+    """
+
+    def __init__(
+        self,
+        *,
+        effort: str = settings.voice_llm_effort,
+        thinking: str = settings.voice_llm_thinking,
+        **kwargs: Any,
+    ):
+        """Build the Anthropic LLM and remember the effort and thinking mode to send."""
+        super().__init__(**kwargs)
+        self.effort, self.thinking = effort, thinking
+
+    def chat(
+        self,
+        *,
+        chat_ctx: llm.ChatContext,
+        tools: list[llm.Tool] | None = None,
+        conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS,
+        parallel_tool_calls: NotGivenOr[bool] = NOT_GIVEN,
+        tool_choice: NotGivenOr[llm.ToolChoice] = NOT_GIVEN,
+        extra_kwargs: NotGivenOr[dict[str, Any]] = NOT_GIVEN,
+    ) -> anthropic.LLMStream:
+        """Start a request with the configured thinking mode and effort."""
+        extra = {
+            "thinking": {"type": self.thinking},
+            "output_config": {"effort": self.effort},
+            **(extra_kwargs if is_given(extra_kwargs) else {}),
+        }
+        extra.pop("temperature", None)
+        return super().chat(
+            chat_ctx=chat_ctx,
+            tools=tools,
+            conn_options=conn_options,
+            parallel_tool_calls=parallel_tool_calls,
+            tool_choice=tool_choice,
+            extra_kwargs=extra,
+        )
+
+
+def build_llm(model: str = settings.voice_llm_model) -> TutorLLM:
+    """Return Claude for the tutor, caching the lesson prompt and tools across turns."""
+    return TutorLLM(
+        model=model,
+        api_key=secret(settings.anthropic_api_key) or NOT_GIVEN,
+        max_tokens=settings.voice_llm_max_tokens,
+        caching="ephemeral",
     )
-    return openai.LLM.with_openrouter(model=model, app_name="AI Language Teacher", **options)
+
+
+def build_stt(language: LanguageProfile) -> soniox.STT:
+    """Return Soniox STT hinted (not locked) to the target language, so native-language slips still transcribe."""
+    return soniox.STT(
+        api_key=secret(settings.soniox_api_key),
+        params=soniox.STTOptions(
+            model=settings.stt_model,
+            language_hints=[language.code],
+            max_endpoint_delay_ms=settings.stt_max_endpoint_delay_ms,
+        ),
+    )
+
+
+def build_tts(language: LanguageProfile) -> cartesia.TTS:
+    """Return Cartesia TTS speaking the target language in the tutor's voice."""
+    return cartesia.TTS(
+        api_key=secret(settings.cartesia_api_key),
+        model=settings.tts_model,
+        voice=settings.tts_voice,
+        language=language.code,
+    )
 
 
 def build_session(language: LanguageProfile, vad: silero.VAD) -> AgentSession:
-    """Return the speech pipeline for one target language: Gradium STT/TTS, OpenRouter LLM, fast turns."""
+    """Return the speech pipeline for one target language: Soniox STT, Claude, Cartesia TTS, fast turns."""
     session = AgentSession(
-        stt=gradium.STT(language=language.code),
+        stt=build_stt(language),
         llm=build_llm(),
-        tts=gradium.TTS(voice_id=language.voice_id),
+        tts=build_tts(language),
         vad=vad,
         turn_handling=turn_handling(BALANCED),
         conn_options=SessionConnectOptions(llm_conn_options=APIConnectOptions(max_retry=1)),
         user_away_timeout=None,
+        use_tts_aligned_transcript=True,
     )
     yield_to_caller(session)
     log_turn_metrics(session)
@@ -171,10 +240,12 @@ async def lesson_entrypoint(ctx: JobContext) -> None:
         return
 
     async def on_shutdown() -> None:
-        """Record the lesson as abandoned or completed if it is still open, then flush traces."""
+        """Record the lesson as abandoned or completed if it is still open, then its STT usage, then flush traces."""
         await tutor.finalize()
         await recorder.aclose()
-        await flush_tracing(ctx.proc.userdata.get("tracer_provider"))
+        tracer_provider = ctx.proc.userdata.get("tracer_provider")
+        record_stt_usage(tracer_provider, session.usage)
+        await flush_tracing(tracer_provider)
 
     ctx.add_shutdown_callback(on_shutdown)
     await recorder.start()
@@ -182,7 +253,7 @@ async def lesson_entrypoint(ctx: JobContext) -> None:
     timer = LessonTimer(state, on_time_up=tutor.steps.stop).start()
 
     def on_close(_: object) -> None:
-        """Stop the timer and end the job so no Gradium session outlives the learner."""
+        """Stop the timer and end the job so no speech session outlives the learner."""
         timer.cancel()
         ctx.shutdown(reason="session closed")
 

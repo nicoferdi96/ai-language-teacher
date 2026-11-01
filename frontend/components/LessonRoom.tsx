@@ -9,12 +9,15 @@ import {
   useTranscriptions,
   useVoiceAssistant,
 } from "@livekit/components-react";
+import type { RoomOptions } from "livekit-client";
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Flag } from "@/components/Flag";
 import { Goals } from "@/components/Goals";
 import { Icon } from "@/components/Icon";
 import { Lumi } from "@/components/Lumi";
+import { SoundCheck, SoundSettings } from "@/components/SoundCheck";
 import { Brand } from "@/components/WizardShell";
+import { type DeviceChoices, loadDeviceChoices } from "@/lib/devices";
 import { findTargetLanguage } from "@/lib/languages";
 import type { Step, VocabularyItem } from "@/lib/planner";
 
@@ -51,8 +54,16 @@ export function LessonRoom() {
   const [progress, setProgress] = useState<Progress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [micBlocked, setMicBlocked] = useState(false);
+  const [devices, setDevices] = useState<DeviceChoices>({});
+  const [roomOptions, setRoomOptions] = useState<RoomOptions>({});
   const starting = useRef(false);
   const blockMic = useCallback(() => setMicBlocked(true), []);
+  const pickDevice = useCallback(
+    (kind: keyof DeviceChoices, deviceId: string) => setDevices((current) => ({ ...current, [kind]: deviceId })),
+    [],
+  );
+
+  useEffect(() => setDevices(loadDeviceChoices()), []);
 
   async function start() {
     if (starting.current) return;
@@ -63,6 +74,11 @@ export function LessonRoom() {
       const res = await fetch("/api/session", { method: "POST" });
       if (!res.ok) throw new Error((await res.json()).error ?? "Couldn't start the lesson");
       const info = (await res.json()) as SessionInfo;
+      // Fixed for the room's lifetime; later swaps go through SoundSettings on the live room.
+      setRoomOptions({
+        audioCaptureDefaults: { deviceId: devices.audioinput },
+        audioOutput: { deviceId: devices.audiooutput },
+      });
       setSession(info);
       setProgress({ steps: info.lesson.steps, outcome: null, summary: null, new_vocabulary: [] });
       setPhase("live");
@@ -91,6 +107,7 @@ export function LessonRoom() {
             serverUrl={session.server_url}
             token={session.participant_token}
             connect
+            options={roomOptions}
             audio={false}
             video={false}
             onDisconnected={() => setPhase((current) => (current === "live" ? "ended" : current))}
@@ -114,7 +131,7 @@ export function LessonRoom() {
         ) : phase === "ended" ? (
           <WrapUp progress={progress} />
         ) : (
-          <StartGate phase={phase} error={error} onStart={start} />
+          <StartGate phase={phase} error={error} onStart={start} devices={devices} onPickDevice={pickDevice} />
         )}
       </section>
     </main>
@@ -122,7 +139,19 @@ export function LessonRoom() {
 }
 
 /** Pre-lesson screen; the click doubles as the user gesture browsers need for audio. */
-function StartGate({ phase, error, onStart }: { phase: Phase; error: string | null; onStart: () => void }) {
+function StartGate({
+  phase,
+  error,
+  onStart,
+  devices,
+  onPickDevice,
+}: {
+  phase: Phase;
+  error: string | null;
+  onStart: () => void;
+  devices: DeviceChoices;
+  onPickDevice: (kind: keyof DeviceChoices, deviceId: string) => void;
+}) {
   const starting = phase === "starting";
   return (
     <div className="gate">
@@ -146,6 +175,7 @@ function StartGate({ phase, error, onStart }: { phase: Phase; error: string | nu
           </li>
         </ul>
       )}
+      <SoundCheck choices={devices} onChange={onPickDevice} />
       <button type="button" className="btn btn--lg" onClick={onStart} disabled={starting}>
         {starting ? <span className="spinner" aria-hidden="true" /> : <Icon name="mic" size={22} />}
         {starting ? "Connecting…" : phase === "error" ? "Try again" : "Start the lesson"}
@@ -250,6 +280,7 @@ function LiveLesson({
           >
             <Icon name={isMicrophoneEnabled ? "mic" : "micOff"} size={24} />
           </button>
+          <SoundSettings />
           <button type="button" className="btn btn--danger" onClick={onEnd}>
             <Icon name="end" size={18} />
             End lesson
