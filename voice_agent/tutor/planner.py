@@ -26,8 +26,8 @@ class NextLessonRequest(BaseModel):
     user_id: str
 
 
-class ObjectiveEvidence(BaseModel):
-    """Body of the planner's objective call."""
+class StepEvidence(BaseModel):
+    """Body of the planner's step call."""
 
     evidence: str
 
@@ -61,13 +61,13 @@ class PlannerClient:
         """Mark the lesson as in progress."""
         await self._post(f"/lessons/{lesson_uuid}/start")
 
-    async def complete_objective(self, lesson_uuid: str, objective_id: str, evidence: str) -> None:
-        """Persist one achieved objective."""
-        await self._post(f"/lessons/{lesson_uuid}/objectives/{objective_id}", ObjectiveEvidence(evidence=evidence))
+    async def complete_step(self, lesson_uuid: str, position: int, evidence: str) -> None:
+        """Persist one finished step."""
+        await self._post(f"/lessons/{lesson_uuid}/steps/{position}", StepEvidence(evidence=evidence))
 
     async def finish_lesson(self, state: LessonState) -> None:
         """Persist the lesson outcome."""
-        await self._post(f"/lessons/{state.package.lesson_uuid}/complete", state.finish_request())
+        await self._post(f"/lessons/{state.plan.lesson_uuid}/complete", state.finish_request())
 
     async def _post(self, path: str, body: BaseModel | None = None, timeout: float = WRITE_TIMEOUT_S) -> Any:
         """POST JSON to the planner and return the decoded response."""
@@ -79,8 +79,8 @@ class PlannerClient:
 class LessonRecorder:
     """Persists lesson progress to the planner and mirrors it to the browser.
 
-    Objective writes run in the background so a tool returns to the model at once;
-    ``finished`` waits for them, then re-sends every achieved objective and the outcome.
+    Step writes run in the background so the next step starts at once; ``finished``
+    waits for them, then re-sends every finished step and the outcome.
     Planner and publish failures are logged, never raised to the model: the in-session
     state stays authoritative, and the room may already be closed for the final event.
     Without a planner or a room (tests, console) the matching side is skipped.
@@ -94,9 +94,9 @@ class LessonRecorder:
         self._pending: set[asyncio.Task[None]] = set()
 
     async def start(self) -> None:
-        """Mark the lesson in progress with the planner and show its objectives in the browser."""
+        """Mark the lesson in progress with the planner and show its steps in the browser."""
         if self.planner is not None:
-            await self.planner.start_lesson(self.state.package.lesson_uuid)
+            await self.planner.start_lesson(self.state.plan.lesson_uuid)
         await self._safely(self.publish())
 
     async def publish(self) -> None:
@@ -106,20 +106,19 @@ class LessonRecorder:
                 self.state.progress_event().model_dump_json(), reliable=True, topic=settings.progress_topic
             )
 
-    def objective_done(self, objective_id: str, evidence: str) -> None:
-        """Persist and publish one achieved objective without blocking the caller."""
-        task = asyncio.create_task(self._record_objective(objective_id, evidence))
+    def step_done(self, position: int) -> None:
+        """Persist and publish one finished step without blocking the caller."""
+        task = asyncio.create_task(self._record_step(position))
         self._pending.add(task)
         task.add_done_callback(self._pending.discard)
 
     async def finished(self) -> None:
-        """Wait for pending writes, re-send each achieved objective and the outcome, then publish."""
+        """Wait for pending writes, re-send each finished step and the outcome, then publish."""
         await asyncio.gather(*self._pending)
         if self.planner is not None:
-            lesson_uuid = self.state.package.lesson_uuid
-            for objective in self.state.objectives:
-                if objective.done:
-                    await self._safely(self.planner.complete_objective(lesson_uuid, objective.id, objective.evidence or ""))
+            for step in self.state.steps:
+                if step.done:
+                    await self._safely(self._complete_step(step.position))
             await self._safely(self.planner.finish_lesson(self.state))
         await self._safely(self.publish())
 
@@ -128,11 +127,16 @@ class LessonRecorder:
         if self.planner is not None:
             await self.planner.aclose()
 
-    async def _record_objective(self, objective_id: str, evidence: str) -> None:
-        """Persist one objective with the planner, then publish the new progress."""
+    async def _record_step(self, position: int) -> None:
+        """Persist one step with the planner, then publish the new progress."""
         if self.planner is not None:
-            await self._safely(self.planner.complete_objective(self.state.package.lesson_uuid, objective_id, evidence))
+            await self._safely(self._complete_step(position))
         await self._safely(self.publish())
+
+    async def _complete_step(self, position: int) -> None:
+        """Send one step's evidence to the planner."""
+        step = self.state.step(position)
+        await self.planner.complete_step(self.state.plan.lesson_uuid, position, step.evidence or "")
 
     @staticmethod
     async def _safely(call: Awaitable[None]) -> None:

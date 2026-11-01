@@ -40,9 +40,9 @@ Lumi is one product made of several small apps, each in the runtime that suits i
 
 1. After onboarding, and on every return visit, the frontend asks the planner to prepare the next lesson (`POST /get_next_lesson/`) and then reads the plan for the home screen (`GET /progress/{user}`).
 2. **Start speaking** calls the frontend's `/api/session`, which forwards to `voice-api` (`POST /sessions`).
-3. `voice-api` fetches the lesson package from the planner (reusing the open lesson) and returns a LiveKit token for a fresh room. The token's room configuration dispatches the `language-tutor` agent with the lesson package as job metadata.
-4. The browser joins the room with the LiveKit React SDK. LiveKit Cloud starts a job on the voice worker, which talks with the learner and streams goal ticks back over a data channel (`lesson-progress` topic).
-5. The worker records progress in the planner as it happens: lesson started, each objective met (with the learner's words as evidence), and the final outcome with a summary and new words.
+3. `voice-api` asks the planner for the next lesson (reusing the open lesson) and returns a LiveKit token for a fresh room. The token's room configuration dispatches the `language-tutor` agent with only the lesson's id (and the fields its traces are tagged with) as job metadata.
+4. The browser joins the room with the LiveKit React SDK. LiveKit Cloud starts a job on the voice worker, which reads the lesson's goal and steps straight from Postgres (read-only) while it joins the room, talks with the learner and streams goal ticks back over a data channel (`lesson-progress` topic).
+5. The worker records progress in the planner as it happens: lesson started, each step done (with the learner's words as evidence), and the final outcome with a summary and new words. The planner stays the only writer of plans and lessons.
 
 ### The lesson planner: an Agno agentic workflow
 
@@ -57,11 +57,17 @@ Lumi is one product made of several small apps, each in the runtime that suits i
 The two agents (`planner/agents.py`) are Agno `Agent`s with **structured output**: each has a Pydantic `output_schema`, gets a JSON prompt, and returns a validated model rather than free text.
 
 - **CurriculumAgent** → `LearningPlanDraft`. Infers a starting CEFR level (A1–C2) from how the learner describes themselves, then writes 8–12 ordered units (vocabulary, grammar or conversation), each teachable in one or two 10-minute spoken lessons and weighted to the learner's goal and preferred style.
-- **LessonAgent** → `LessonBriefDraft`. Sees the profile, the plan with unit statuses, the focus unit and the recent lessons (objectives met and unmet, new words, summaries). It writes the next lesson: 3–5 objectives small enough to check from what the learner *says*, 5–8 vocabulary items with meanings in the learner's native language, up to 4 recap terms, and 120–250 words of guidance for the tutor, including mistakes speakers of the learner's native language typically make. Unmet objectives from an unfinished lesson are carried forward first.
+- **LessonAgent** → `LessonPlanDraft`, a step-by-step plan. Sees the profile, the plan with unit statuses, the focus unit and the recent lessons (steps met and unmet, new words, summaries). It writes:
+  - a nested `goal`: the `aim` (what the learner will be able to say) and the `prompt` that guides the tutor for the whole lesson, including mistakes speakers of the learner's native language typically make
+  - exactly **5 `steps`** (`STEPS_PER_LESSON`), each a `task` small enough to check from what the learner *says* and the `prompt` the tutor follows while coaching it: warm-up, new phrases, practice, role-play, recap
+  - an `opening_line` in the target language, which the tutor speaks word for word
+  - 5–8 vocabulary items with meanings in the learner's native language, and up to 4 recap terms (folded into the goal prompt)
 
-Design choice: **the model decides content, code owns state.** The agents never touch the database. Code picks the focus unit, merges recap terms, reuses an open lesson so a page refresh never creates a second one, holds a per-learner lock against concurrent requests, and marks a unit done only when a lesson on it was completed with every objective met.
+  Unmet steps from an unfinished lesson are carried forward first. The lesson goes in `lessons`, its steps in `lesson_steps`.
 
-The planner's API (`app.py`): `POST /get_next_lesson/`, `GET /progress/{user_id}`, `GET /lessons/{id}`, `POST /lessons/{id}/start`, `POST /lessons/{id}/objectives/{objective_id}`, `POST /lessons/{id}/complete`.
+Design choice: **the model decides content, code owns state.** The agents never touch the database. Code picks the focus unit, merges recap terms, reuses an open lesson so a page refresh never creates a second one, holds a per-learner lock against concurrent requests, and marks a unit done only when a lesson on it was completed with every step done.
+
+The planner's API (`app.py`): `POST /get_next_lesson/`, `GET /progress/{user_id}`, `GET /lessons/{id}`, `POST /lessons/{id}/start`, `POST /lessons/{id}/steps/{position}`, `POST /lessons/{id}/complete`.
 
 ### The voice tutor: a LiveKit agent
 
@@ -79,19 +85,29 @@ The planner's API (`app.py`): `POST /get_next_lesson/`, `GET /progress/{user_id}
 
 **Turn-taking** (`turn.py`) contains the VAD floor, the endpointing window, **adaptive interruption** (a short "sí" said over Lumi is heard as an answer and doesn't cut her off; a real barge-in does), **preemptive generation** (the LLM starts on the transcript before the turn is confirmed), and **yield to caller** (a reply that hasn't started playing is dropped if the learner keeps talking, so Lumi answers everything they said). The worker logs each turn's end-of-utterance delay, LLM first token and TTS first audio as `turn:` lines, so tune these values against those numbers.
 
-**The agent** (`agent.py`, `tutor/prompt.py`): a single `Lumi` agent whose system prompt is built from the planner's lesson package. It speaks **only the target language**: it rephrases in simpler words instead of translating, keeps turns to one or two short sentences, and uses the native language only to anticipate typical mistakes. Its tools:
+**The agent and its steps** (`agent.py`, `tutor/steps.py`, `tutor/prompt.py`): the lesson is a LiveKit [task group](https://docs.livekit.io/agents/logic/tasks/).
+- `Lumi` is the lesson agent. Its prompt holds the persona, the language rule, the lesson goal and an outline of the steps.
+- On entering, `Lumi`:
+  1. speaks the planner's `opening_line` with `session.say()` (no LLM call)
+  2. runs the steps
+  3. records the outcome
+  4. asks the LLM for a short spoken recap and goodbye, then ends the session
+- Each step is a `LessonStepTask` (`AgentTask[StepResult]`) in a `TaskGroup`. Its prompt is the same core plus only that step's coaching.
+- Every step gets the full conversation so far, minus tool calls. The learner can ask to go back to an earlier step, and the group's `out_of_scope` tool re-enters it.
+- Lumi speaks **only the target language**: it rephrases in simpler words instead of translating, keeps turns to one or two short sentences, and uses the native language only to anticipate typical mistakes.
 
-- `mark_objective_done(objective_id, evidence)`: allowed only once the learner has produced the target language themselves, not when they just said "yes" or the tutor said it for them.
-- `lesson_status()`: remaining objectives and minutes left.
-- `complete_lesson(summary, new_vocabulary)`: refused by code until every objective is done or time is up.
+The model's tools:
+- `complete_step(evidence, new_vocabulary)` (in each step): finishes the step with a Pydantic `StepResult`. The model should call it only once the learner has produced the target language themselves, not when they just said "yes" or the tutor said it for them.
+- `out_of_scope(task_ids)` (added by `TaskGroup` once a step was visited): goes back to an earlier step.
 - `end_call` (LiveKit's `EndCallTool`): says goodbye in the target language and hangs up.
 
 **Code-owned guardrails** around the model:
 
-- `LessonState` (`lesson.py`) is the source of truth for objectives, timing and outcome.
-- `LessonTimer` (`lesson.py`) nudges the tutor to wrap up at 85% of the lesson time and forces the close at 120%.
+- `LessonState` (`lesson.py`) is the source of truth for steps, new words, timing and outcome. Code sets the outcome: completed when every step is done, else abandoned.
+- `LessonTimer` (`lesson.py`) stops the running step at 95% of the lesson time (`LessonSteps.stop` raises `LessonTimeUp` into it), so the tutor wraps up.
+- `LessonStore` (`store.py`) reads the lesson, its steps and the learner's profile in one read-only query when the job starts, in parallel with joining the room. Prewarm only loads the VAD and tracing, because it runs before any lesson is known.
 - `LessonRecorder` (`planner.py`) persists every change to the planner and mirrors it to the browser. Failures are logged, not passed to the model, and everything is re-sent when the lesson ends.
-- If the learner leaves or the call drops, a shutdown callback records the lesson as completed (all goals met) or abandoned, so the planner picks up from there next time.
+- If the learner leaves or the call drops, a shutdown callback records the lesson as completed (all steps done) or abandoned, so the planner picks up from there next time.
 - If the learner never joins within 30 seconds the job leaves, and when the session closes the job shuts down so no Gradium session outlives the learner.
 
 ### LiveKit components we use
@@ -101,10 +117,11 @@ LiveKit handles all real-time audio. This is exactly which parts of it the app u
 | Layer | Component | Where | What it does here |
 |---|---|---|---|
 | Cloud | **LiveKit Cloud** (rooms and media server) | your project, `LIVEKIT_URL` | Hosts one WebRTC room per lesson, routes audio between browser and tutor, and dispatches the agent job when the learner joins. The free Build plan is enough to run the app. |
-| Server SDK | **`livekit-api`** (Python): `AccessToken`, `VideoGrants`, `RoomConfiguration`, `RoomAgentDispatch` | `voice_agent/api/app.py` | Mints the learner's 30-minute join token for a fresh room. The token's room configuration names the `language-tutor` agent and carries the lesson package as metadata, so joining the room is what starts the tutor (explicit dispatch). |
+| Server SDK | **`livekit-api`** (Python): `AccessToken`, `VideoGrants`, `RoomConfiguration`, `RoomAgentDispatch` | `voice_agent/api/app.py` | Mints the learner's 30-minute join token for a fresh room. The token's room configuration names the `language-tutor` agent and carries the lesson's id as metadata, so joining the room is what starts the tutor (explicit dispatch). |
 | Agents SDK | **`livekit-agents` 1.8**: `AgentServer`, `@server.rtc_session(agent_name=...)`, `JobContext`, `JobProcess` | `voice_agent/agent.py` | The worker process. Registers with LiveKit Cloud under the name `language-tutor`, prewarms Silero once per process, and runs one job per lesson: connect, wait for the learner, start the session, publish progress, clean up on shutdown. |
-| | `AgentSession`, `TurnHandlingOptions` | `agent.py`, `tutor/turn.py` | Runs the voice pipeline (VAD → turn detection → STT → LLM → TTS), interruptions, and `generate_reply` for the greeting and the time nudges. It also publishes the agent's state and both speakers' transcripts to the room automatically, which is what the UI reads. |
-| | `Agent`, `@function_tool`, `RunContext`, `ToolError` | `voice_agent/agent.py` | The tutor (`Lumi`): system prompt plus the `mark_objective_done`, `lesson_status` and `complete_lesson` tools. `ToolError` sends a refusal back to the model, e.g. when it tries to complete a lesson too early. |
+| | `AgentSession`, `TurnHandlingOptions` | `agent.py`, `tutor/turn.py` | Runs the voice pipeline (VAD → turn detection → STT → LLM → TTS), interruptions, `say` for the fixed opening line and `generate_reply` for each step's lead-in and the closing recap. It also publishes the agent's state and both speakers' transcripts to the room automatically, which is what the UI reads. |
+| | `Agent`, `AgentTask`, `@function_tool` | `agent.py`, `tutor/steps.py` | The lesson agent (`Lumi`) and one `LessonStepTask` per planned step, each with a `complete_step` tool returning a `StepResult`. |
+| | `TaskGroup` (beta workflows) | `tutor/steps.py` | Runs the steps in order with a shared history (no summary, tool calls dropped) and lets the learner go back to an earlier step. |
 | | `EndCallTool` (beta) | `agent.py` | Ready-made hang-up tool: speaks a goodbye, then ends the session. |
 | | `agents.cli` | `agent.py`, `Dockerfile` | `download-files` bakes model weights into the image; `start` runs the worker in Docker; `dev` runs it locally with reload. |
 | Plugins | `livekit-plugins-gradium` | `agent.py` | Gradium STT and TTS (your `GRADIUM_API_KEY`). |
@@ -129,17 +146,17 @@ The browser never calls an agent directly. Every request goes through the Next.j
 | Home (`/home`) | Calls `GET /progress/{user}` and renders the plan path, today's lesson with its goals, and "Last time" from the previous lesson. | Returns the plan with unit statuses and the recent lessons. Read-only. |
 | After a lesson | **Back to my path** goes to `/wizard/preparing` again. | Re-runs the workflow, which now sees the finished lesson and plans the next one. |
 
-The planner's agents run only between lessons. The UI shows their output (plan units, lesson titles, objectives, vocabulary), but never talks to the LLM itself.
+The planner's agents run only between lessons. The UI shows their output (plan units, lesson titles, step tasks, vocabulary), but never talks to the LLM itself.
 
 **UI ↔ LiveKit voice agent (real time over WebRTC)**
 
-1. **Start the lesson** (`components/LessonRoom.tsx`) posts to `/api/session`. The click also counts as the user gesture browsers require before playing audio. The route forwards to `voice-api`, which returns the LiveKit URL, a 30-minute token for a fresh room, the progress topic and the lesson (title, duration, objectives).
+1. **Start the lesson** (`components/LessonRoom.tsx`) posts to `/api/session`. The click also counts as the user gesture browsers require before playing audio. The route forwards to `voice-api`, which returns the LiveKit URL, a 30-minute token for a fresh room, the progress topic and the lesson (title, duration, step tasks; the coaching prompts stay on the server).
 2. The page mounts `<LiveKitRoom>` from `@livekit/components-react` with that token and turns on the microphone. Joining the room is what makes LiveKit dispatch the tutor job; if the agent hasn't arrived after 25 seconds the UI says so.
 3. During the lesson the UI listens to three streams from the room:
    - **Audio:** `RoomAudioRenderer` plays Lumi's voice, and the learner's mic track goes to the agent.
    - **Agent state:** `useVoiceAssistant()` reports `listening`, `thinking` or `speaking`. That drives Lumi's face, the voice meter, the status line and the panel colour (yellow when it's the learner's turn).
    - **Transcripts:** `useTranscriptions()` gives the live text of both speakers for the Conversation panel.
-4. **Goals** come over a LiveKit data channel. Whenever the agent's `mark_objective_done` or `complete_lesson` tool runs, the worker publishes the whole lesson state (objectives, outcome, summary, new words) on the `lesson-progress` topic. The UI swaps in that state, ticks the goal and shows a short "Goal reached" toast. Because the full state is re-sent every time, a missed message is fixed by the next one.
+4. **Goals** come over a LiveKit data channel. Whenever a step finishes or the lesson ends, the worker publishes the whole lesson state (steps, outcome, summary, new words) on the `lesson-progress` topic. The UI swaps in that state, ticks the goal and shows a short "Goal reached" toast. Because the full state is re-sent every time, a missed message is fixed by the next one.
 5. **Ending:** when the agent calls `end_call` or the learner presses **End lesson**, the room disconnects and the UI shows the wrap-up from the last progress message (summary, new words, goals). The worker has already saved the outcome in the planner, so the UI does not write anything itself.
 
 The mic button, the timer and leaving the page are handled entirely in the browser; the agent learns about them only through audio and the room disconnecting, which its shutdown callback turns into a completed or abandoned lesson.

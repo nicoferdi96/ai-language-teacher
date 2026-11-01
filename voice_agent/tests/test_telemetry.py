@@ -6,14 +6,21 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from tutor.telemetry import LessonStamp, job_attributes, should_export, unpriced
 
-from conftest import make_package
+from tutor.lesson import LessonDispatch
 
 
 def test_job_attributes_put_the_lesson_in_its_user_session_and_trace():
-    package = make_package("de")
-    attributes = job_attributes(package.model_dump_json())
-    assert attributes["user.id"] == package.user_id
-    assert attributes["session.id"] == package.lesson_uuid
+    dispatch = LessonDispatch(
+        lesson_uuid="00000000-0000-0000-0000-000000000001",
+        user_id="learner@example.com",
+        target_language="de",
+        native_language="English",
+        level="A1",
+        title="Ordering at a café",
+    )
+    attributes = job_attributes(dispatch.model_dump_json())
+    assert attributes["user.id"] == dispatch.user_id
+    assert attributes["session.id"] == dispatch.lesson_uuid
     assert attributes["langfuse.trace.name"] == "voice-lesson"
     assert attributes["langfuse.trace.tags"] == ["voice", "de", "A1"]
 

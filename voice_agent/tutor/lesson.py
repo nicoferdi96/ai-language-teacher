@@ -1,20 +1,11 @@
-"""Lesson models: the planner's package, the running lesson state, what it reports, and its timer."""
+"""Lesson models: the planner's step-by-step lesson, the running lesson state, what it reports, and its timer."""
 
 import asyncio
 import time
+from collections.abc import Callable
 from typing import Literal
 
-from livekit.agents import AgentSession
 from pydantic import BaseModel, Field
-
-
-class Objective(BaseModel):
-    """A checkable lesson goal."""
-
-    id: str
-    text: str
-    done: bool = False
-    evidence: str | None = None
 
 
 class VocabularyItem(BaseModel):
@@ -24,37 +15,52 @@ class VocabularyItem(BaseModel):
     meaning: str
 
 
-class PlannedLesson(BaseModel):
-    """The lesson record inside the planner's ``/get_next_lesson/`` response."""
+class LessonGoal(BaseModel):
+    """What the whole lesson aims at, and the planner's guidance for running it."""
+
+    aim: str
+    prompt: str
+
+
+class StepProgress(BaseModel):
+    """A lesson step as the browser sees it: no coaching prompt."""
+
+    position: int
+    task: str
+    done: bool = False
+
+
+class LessonStep(StepProgress):
+    """One planned step: the learner's task and how the tutor coaches it."""
+
+    prompt: str
+    evidence: str | None = None
+
+    def progress(self) -> StepProgress:
+        """The step without its prompt and evidence."""
+        return StepProgress(position=self.position, task=self.task, done=self.done)
+
+
+class StepResult(BaseModel):
+    """What a finished step task returns: the learner's words and the words that came up."""
+
+    evidence: str
+    new_vocabulary: list[VocabularyItem] = Field(default_factory=list)
+
+
+class LessonDispatch(BaseModel):
+    """Dispatch metadata: which lesson the worker runs, plus the fields its traces are tagged with."""
 
     lesson_uuid: str
     user_id: str
     target_language: str
-    title: str
-    lesson_script: str
-    duration: int = 10
-    objectives: list[Objective] = Field(default_factory=list)
-    vocabulary: list[VocabularyItem] = Field(default_factory=list)
-
-
-class PlannedUnit(BaseModel):
-    """The plan unit a lesson belongs to."""
-
-    title: str
-
-
-class NextLessonResponse(BaseModel):
-    """The planner's ``/get_next_lesson/`` response (extra fields are ignored)."""
-
-    lesson: PlannedLesson
     native_language: str
     level: str
-    learning_method: str | None = None
-    unit: PlannedUnit | None = None
+    title: str
 
 
-class LessonPackage(BaseModel):
-    """The lesson as the tutor runs it; sent to the worker as dispatch metadata."""
+class LessonPlan(BaseModel):
+    """The lesson as the tutor runs it, read from Postgres when the job starts."""
 
     lesson_uuid: str
     user_id: str
@@ -64,55 +70,72 @@ class LessonPackage(BaseModel):
     title: str
     unit_title: str | None = None
     learning_method: str | None = None
-    guidelines: str
+    goal: LessonGoal
+    opening_line: str
     duration_minutes: int = 10
-    objectives: list[Objective]
+    steps: list[LessonStep] = Field(min_length=1)
     vocabulary: list[VocabularyItem] = Field(default_factory=list)
 
-    @classmethod
-    def from_planner(cls, response: NextLessonResponse) -> "LessonPackage":
-        """Build a package from the planner's next-lesson response."""
-        lesson = response.lesson
-        return cls(
+
+class LessonView(BaseModel):
+    """The lesson as the browser shows it before the first progress event."""
+
+    lesson_uuid: str
+    target_language: str
+    title: str
+    duration_minutes: int
+    steps: list[StepProgress]
+
+
+class PlannedLesson(BaseModel):
+    """The lesson record inside the planner's ``/get_next_lesson/`` response (extra fields are ignored)."""
+
+    lesson_uuid: str
+    user_id: str
+    target_language: str
+    title: str
+    duration: int = 10
+    steps: list[StepProgress]
+
+
+class NextLessonResponse(BaseModel):
+    """The planner's ``/get_next_lesson/`` response, as far as the voice API needs it."""
+
+    lesson: PlannedLesson
+    native_language: str
+    level: str
+
+    def dispatch(self) -> LessonDispatch:
+        """The metadata that dispatches the tutor for this lesson."""
+        return LessonDispatch(
+            lesson_uuid=self.lesson.lesson_uuid,
+            user_id=self.lesson.user_id,
+            target_language=self.lesson.target_language,
+            native_language=self.native_language,
+            level=self.level,
+            title=self.lesson.title,
+        )
+
+    def view(self) -> LessonView:
+        """The lesson for the browser."""
+        lesson = self.lesson
+        return LessonView(
             lesson_uuid=lesson.lesson_uuid,
-            user_id=lesson.user_id,
             target_language=lesson.target_language,
-            native_language=response.native_language,
-            level=response.level,
             title=lesson.title,
-            unit_title=response.unit.title if response.unit else None,
-            learning_method=response.learning_method,
-            guidelines=lesson.lesson_script,
             duration_minutes=lesson.duration,
-            objectives=lesson.objectives,
-            vocabulary=lesson.vocabulary,
+            steps=lesson.steps,
         )
 
 
 Outcome = Literal["completed", "abandoned"]
 
 
-class ObjectiveRef(BaseModel):
-    """An objective as the model sees it in status facts."""
-
-    id: str
-    text: str
-
-
-class StatusFacts(BaseModel):
-    """Compact progress facts returned to the model by the lesson tools."""
-
-    remaining_objectives: list[ObjectiveRef]
-    done_objectives: list[str]
-    minutes_elapsed: float
-    minutes_left: float
-
-
 class ProgressEvent(BaseModel):
     """Payload published to the browser on every change."""
 
     lesson_uuid: str
-    objectives: list[Objective]
+    steps: list[StepProgress]
     outcome: Outcome | None
     summary: str | None
     new_vocabulary: list[VocabularyItem]
@@ -127,25 +150,32 @@ class FinishLessonRequest(BaseModel):
 
 
 class LessonState(BaseModel):
-    """Authoritative state of the running lesson; tools read and change it here."""
+    """Authoritative state of the running lesson; step tasks report into it, code closes it."""
 
-    package: LessonPackage
+    plan: LessonPlan
     started_at: float = Field(default_factory=time.monotonic)
     outcome: Outcome | None = None
     summary: str | None = None
     new_vocabulary: list[VocabularyItem] = Field(default_factory=list)
 
     @property
-    def objectives(self) -> list[Objective]:
-        """The lesson objectives in order."""
-        return self.package.objectives
+    def steps(self) -> list[LessonStep]:
+        """The lesson steps in order."""
+        return self.plan.steps
 
-    def remaining(self) -> list[Objective]:
-        """Objectives not achieved yet."""
-        return [objective for objective in self.objectives if not objective.done]
+    def step(self, position: int) -> LessonStep:
+        """Return the step at ``position``; unknown positions raise KeyError."""
+        step = next((step for step in self.steps if step.position == position), None)
+        if step is None:
+            raise KeyError(position)
+        return step
+
+    def remaining(self) -> list[LessonStep]:
+        """Steps not done yet."""
+        return [step for step in self.steps if not step.done]
 
     def all_done(self) -> bool:
-        """True when every objective is achieved."""
+        """True when every step is done."""
         return not self.remaining()
 
     def elapsed_minutes(self) -> float:
@@ -154,45 +184,38 @@ class LessonState(BaseModel):
 
     def minutes_left(self) -> float:
         """Minutes left in the planned duration (never negative)."""
-        return max(0.0, self.package.duration_minutes - self.elapsed_minutes())
+        return max(0.0, self.plan.duration_minutes - self.elapsed_minutes())
 
-    def can_complete(self) -> bool:
-        """A lesson may be completed when all objectives are met or time is nearly up."""
-        return self.all_done() or self.minutes_left() <= 1.5
+    def mark_step_done(self, position: int, result: StepResult) -> LessonStep:
+        """Mark a step done and collect its new words; a step already done keeps its first evidence."""
+        step = self.step(position)
+        if not step.done:
+            step.done = True
+            step.evidence = result.evidence
+        known = {item.term.casefold() for item in self.new_vocabulary}
+        self.new_vocabulary += [item for item in result.new_vocabulary if item.term.casefold() not in known]
+        return step
 
-    def mark_done(self, objective_id: str, evidence: str) -> Objective:
-        """Mark an objective achieved; unknown ids raise KeyError, repeats are no-ops."""
-        objective = next((o for o in self.objectives if o.id == objective_id), None)
-        if objective is None:
-            raise KeyError(objective_id)
-        if not objective.done:
-            objective.done = True
-            objective.evidence = evidence
-        return objective
-
-    def finish(self, outcome: Outcome, summary: str | None, new_vocabulary: list[VocabularyItem]) -> bool:
-        """Record the outcome once; returns False if the lesson was already finished."""
+    def finish(self, summary: str | None = None) -> bool:
+        """Record the outcome once, from the steps; returns False if the lesson was already finished."""
         if self.outcome is not None:
             return False
-        self.outcome = outcome
-        self.summary = summary
-        self.new_vocabulary = new_vocabulary
+        self.outcome = "completed" if self.all_done() else "abandoned"
+        self.summary = summary or self.recap()
         return True
 
-    def status_facts(self) -> StatusFacts:
-        """Compact facts about progress for the model."""
-        return StatusFacts(
-            remaining_objectives=[ObjectiveRef(id=o.id, text=o.text) for o in self.remaining()],
-            done_objectives=[o.id for o in self.objectives if o.done],
-            minutes_elapsed=round(self.elapsed_minutes(), 1),
-            minutes_left=round(self.minutes_left(), 1),
-        )
+    def recap(self) -> str:
+        """A short English summary of what was practised and what is left."""
+        done = "; ".join(step.task for step in self.steps if step.done)
+        left = "; ".join(step.task for step in self.remaining())
+        practised = f"Practised: {done}." if done else "We only got started."
+        return f"{practised} Next time: {left}." if left else practised
 
     def progress_event(self) -> ProgressEvent:
         """Snapshot published to the browser."""
         return ProgressEvent(
-            lesson_uuid=self.package.lesson_uuid,
-            objectives=self.objectives,
+            lesson_uuid=self.plan.lesson_uuid,
+            steps=[step.progress() for step in self.steps],
             outcome=self.outcome,
             summary=self.summary,
             new_vocabulary=self.new_vocabulary,
@@ -205,17 +228,15 @@ class LessonState(BaseModel):
 
 
 class LessonTimer:
-    """Code-owned lesson clock: tells the tutor when to wrap up and when to stop."""
+    """Code-owned lesson clock: calls ``on_time_up`` once the planned duration is nearly over."""
 
-    WRAP_UP_AT = 0.85
-    """Share of the planned duration after which the tutor starts the recap."""
-    FORCE_CLOSE_AT = 1.2
-    """Share of the planned duration after which the tutor must close the lesson."""
+    TIME_UP_AT = 0.95
+    """Share of the planned duration after which the steps stop and the tutor wraps up."""
 
-    def __init__(self, session: AgentSession, state: LessonState):
-        """Prepare a timer for this session and lesson; ``start`` runs it."""
-        self.session = session
+    def __init__(self, state: LessonState, on_time_up: Callable[[], None]):
+        """Prepare a timer for this lesson; ``start`` runs it."""
         self.state = state
+        self.on_time_up = on_time_up
         self._task: asyncio.Task[None] | None = None
 
     def start(self) -> "LessonTimer":
@@ -229,20 +250,7 @@ class LessonTimer:
             self._task.cancel()
 
     async def _run(self) -> None:
-        """Nudge at 85% of the lesson and force the close at 120%."""
-        duration_s = self.state.package.duration_minutes * 60
-        await asyncio.sleep(duration_s * self.WRAP_UP_AT)
-        self._nudge(
-            "Time is almost up. Start the wrap-up now: a 2-sentence recap, "
-            "call complete_lesson, then say goodbye and call end_call."
-        )
-        await asyncio.sleep(duration_s * (self.FORCE_CLOSE_AT - self.WRAP_UP_AT))
-        self._nudge(
-            "The lesson time is over. Call complete_lesson now, say goodbye "
-            "in one sentence and call end_call."
-        )
-
-    def _nudge(self, instructions: str) -> None:
-        """Ask the tutor for a reply with these instructions, unless the lesson already ended."""
+        """Wait out the lesson, then stop it unless it already ended."""
+        await asyncio.sleep(self.state.plan.duration_minutes * 60 * self.TIME_UP_AT)
         if self.state.outcome is None:
-            self.session.generate_reply(instructions=instructions)
+            self.on_time_up()

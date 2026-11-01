@@ -67,39 +67,71 @@ class VocabularyItem(BaseModel):
     meaning: str = Field(description="Very short meaning in the learner's native language")
 
 
-class LessonObjective(BaseModel):
-    """A checkable goal of a lesson."""
+STEPS_PER_LESSON = 5
+"""Every ~10-minute lesson is run as exactly this many steps."""
 
-    id: str
-    text: str
+
+class LessonGoal(BaseModel):
+    """What the whole lesson aims at, and how the tutor should run it."""
+
+    aim: str = Field(
+        description="One learner-facing sentence in English: what the learner will be able to say "
+        "by the end, e.g. 'Order a coffee and pay for it in a café'"
+    )
+    prompt: str = Field(
+        description="Guidance for the voice tutor for the whole lesson, in English (80-160 words): "
+        "the thread that ties the steps together, how to adapt to the learner's style and level, "
+        "and 1-2 typical mistakes speakers of the learner's native language make with this topic"
+    )
+
+
+class LessonStepDraft(BaseModel):
+    """One step of a lesson as proposed by the lesson agent."""
+
+    task: str = Field(
+        description="Short learner-facing task in English, checkable from what the learner SAYS, "
+        "e.g. 'Order a drink with \"quisiera\"'"
+    )
+    prompt: str = Field(
+        description="How the voice tutor guides the learner through this step, in English (40-90 words): "
+        "how to introduce it, which phrases to model, what to ask the learner to say, and when the "
+        "step counts as done"
+    )
+
+
+class LessonStep(LessonStepDraft):
+    """A persisted lesson step with its progress."""
+
+    position: int = Field(ge=1, le=STEPS_PER_LESSON)
     done: bool = False
     evidence: str | None = None
 
 
-class LessonBriefDraft(BaseModel):
-    """Structured output of the lesson agent for the next ~10-minute lesson."""
+class LessonPlanDraft(BaseModel):
+    """Structured output of the lesson agent: the step-by-step plan of the next lesson."""
 
     unit_position: int = Field(description="Position of the plan unit this lesson works on")
     title: str = Field(description="Short learner-facing lesson title in English")
-    objectives: list[str] = Field(
-        description="3 to 5 concrete, speakable goals, each checkable in conversation, "
-        "e.g. 'Order a drink using \"quisiera\"'",
-        min_length=2,
-        max_length=6,
+    goal: LessonGoal
+    opening_line: str = Field(
+        description="What the tutor says first, spoken verbatim: a warm greeting, today's topic in "
+        "one simple sentence and one easy personal question, written ONLY in the target language"
+    )
+    steps: list[LessonStepDraft] = Field(
+        description=f"Exactly {STEPS_PER_LESSON} ordered steps that build on each other, "
+        "from warm-up to a short role-play and recap",
+        min_length=STEPS_PER_LESSON,
+        max_length=STEPS_PER_LESSON,
     )
     vocabulary: list[VocabularyItem] = Field(description="5 to 8 key words or phrases for this lesson")
     recap_terms: list[str] = Field(
         default_factory=list,
         description="Up to 4 terms from previous lessons to quickly review; empty if none",
     )
-    tutor_guidelines: str = Field(
-        description="Guidance for the voice tutor: warm-up idea, how to introduce and drill "
-        "the objectives, a role-play scenario, and how to adapt to the learner's style"
-    )
 
 
 class LessonRecord(BaseModel):
-    """A persisted lesson as stored in the ``lessons`` table."""
+    """A persisted lesson as stored in the ``lessons`` and ``lesson_steps`` tables."""
 
     lesson_uuid: uuid.UUID
     user_id: str
@@ -107,10 +139,11 @@ class LessonRecord(BaseModel):
     unit_id: uuid.UUID | None = None
     target_language: str
     title: str
-    lesson_script: str
+    goal: LessonGoal
+    opening_line: str
     duration: int = 10
     status: LessonStatus = "planned"
-    objectives: list[LessonObjective] = Field(default_factory=list)
+    steps: list[LessonStep] = Field(default_factory=list)
     vocabulary: list[VocabularyItem] = Field(default_factory=list)
     summary: str | None = None
     new_vocabulary: list[VocabularyItem] = Field(default_factory=list)
@@ -146,7 +179,7 @@ class LessonCompletion(BaseModel):
     new_vocabulary: list[VocabularyItem] = Field(default_factory=list)
 
 
-class ObjectiveUpdate(BaseModel):
-    """Payload the voice tutor sends when an objective is achieved."""
+class StepUpdate(BaseModel):
+    """Payload the voice tutor sends when a lesson step is done."""
 
-    evidence: str = Field(description="What the learner said that shows the objective is met")
+    evidence: str = Field(description="What the learner said that shows the step is done")

@@ -1,13 +1,13 @@
-"""System prompt for the voice tutor, built from the lesson package."""
+"""System prompts for the voice tutor: one for the lesson agent, one per lesson step, sharing one core."""
 
 from tutor.languages import LanguageProfile
-from tutor.lesson import LessonPackage
+from tutor.lesson import LessonPlan, LessonStep
 
 
 class TutorPrompt:
-    """Renders the tutor instructions for one lesson."""
+    """Renders the tutor instructions for a lesson and for each of its steps."""
 
-    TEMPLATE = """\
+    CORE = """\
 You are Lumi, a warm, patient and playful {language} tutor in a live VOICE lesson
 with one learner. Everything you say is turned into speech.
 
@@ -38,43 +38,66 @@ with one learner. Everything you say is turned into speech.
 
 # Today's lesson ({minutes} minutes): {title}
 Plan unit: {unit}
-Objectives (ids for tools):
-{objectives}
+Aim: {aim}
+Guidance from the lesson planner:
+{goal_prompt}
 Key vocabulary:
 {vocabulary}
-Guidance from the lesson planner:
-{guidelines}
+"""
 
+    AGENT = """\
 # Running the lesson
-- Start with a short, friendly greeting and one easy personal question, then move
-  into the objectives. Follow the learner's interests, but keep steering towards
-  the objectives.
-- Call mark_objective_done as soon as the learner has PRODUCED the target language
-  for an objective themselves (said the phrase or used the structure correctly at
-  least once, possibly after a correction). Do NOT mark it if they only said
-  "yes", "ok", repeated a single word, or if you said it for them.
-- Use lesson_status if you are unsure what is left or how much time remains.
-- When all objectives are done, or you are told time is up: give a 2-sentence
-  spoken recap, call complete_lesson with a short English summary and the new
-  words that came up, then say goodbye and call end_call.
+The lesson runs as {count} steps; you will get each step's instructions when it
+starts:
+{outline}
+- If the learner clearly says they want to stop or leave, do not argue: say a
+  warm goodbye and call end_call.
+"""
+
+    STEP = """\
+# Current step {position} of {count}: {task}
+{prompt}
+
+# Finishing this step
+- Stay on this step. Follow the learner's interests, but keep steering towards
+  its task.
+- Call complete_step as soon as the learner has PRODUCED this step's target
+  language themselves (said the phrase or used the structure correctly at least
+  once, possibly after a correction). Do NOT call it if they only said "yes",
+  "ok", repeated a single word, or if you said it for them.
+- If the learner wants to go back to an earlier part of the lesson, call
+  out_of_scope with that step.
 - If the learner clearly says they want to stop or leave, do not argue: say a
   warm goodbye and call end_call.
 """
 
     @classmethod
-    def build(cls, language: LanguageProfile, package: LessonPackage) -> str:
-        """Return the full system prompt."""
-        return cls.TEMPLATE.format(
+    def agent(cls, language: LanguageProfile, plan: LessonPlan) -> str:
+        """Return the lesson agent's prompt: the shared core and the outline of the steps."""
+        outline = "\n".join(f"{step.position}. {step.task}" for step in plan.steps)
+        return cls._core(language, plan) + "\n" + cls.AGENT.format(count=len(plan.steps), outline=outline)
+
+    @classmethod
+    def step(cls, language: LanguageProfile, plan: LessonPlan, step: LessonStep) -> str:
+        """Return one step task's prompt: the shared core and this step's coaching."""
+        return (
+            cls._core(language, plan)
+            + "\n"
+            + cls.STEP.format(position=step.position, count=len(plan.steps), task=step.task, prompt=step.prompt)
+        )
+
+    @classmethod
+    def _core(cls, language: LanguageProfile, plan: LessonPlan) -> str:
+        """The persona, language rule, learner and lesson goal every prompt starts with."""
+        return cls.CORE.format(
             language=language.name,
-            native=package.native_language,
-            level=package.level,
-            method=package.learning_method or "balanced conversational practice",
-            minutes=package.duration_minutes,
-            title=package.title,
-            unit=package.unit_title or package.title,
-            objectives="\n".join(
-                f"- {o.id}: {o.text}{' (already done)' if o.done else ''}" for o in package.objectives
-            ),
-            vocabulary="\n".join(f"- {item.term}" for item in package.vocabulary) or "- (none given)",
-            guidelines=package.guidelines,
+            native=plan.native_language,
+            level=plan.level,
+            method=plan.learning_method or "balanced conversational practice",
+            minutes=plan.duration_minutes,
+            title=plan.title,
+            unit=plan.unit_title or plan.title,
+            aim=plan.goal.aim,
+            goal_prompt=plan.goal.prompt,
+            vocabulary="\n".join(f"- {item.term}" for item in plan.vocabulary) or "- (none given)",
         )

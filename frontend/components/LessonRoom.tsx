@@ -16,14 +16,14 @@ import { Icon } from "@/components/Icon";
 import { Lumi } from "@/components/Lumi";
 import { Brand } from "@/components/WizardShell";
 import { findTargetLanguage } from "@/lib/languages";
-import type { Objective, VocabularyItem } from "@/lib/planner";
+import type { Step, VocabularyItem } from "@/lib/planner";
 
 type LessonInfo = {
   lesson_uuid: string;
   target_language: string;
   title: string;
   duration_minutes: number;
-  objectives: Objective[];
+  steps: Step[];
 };
 
 type SessionInfo = {
@@ -34,7 +34,7 @@ type SessionInfo = {
 };
 
 type Progress = {
-  objectives: Objective[];
+  steps: Step[];
   outcome: "completed" | "abandoned" | null;
   summary: string | null;
   new_vocabulary: VocabularyItem[];
@@ -64,7 +64,7 @@ export function LessonRoom() {
       if (!res.ok) throw new Error((await res.json()).error ?? "Couldn't start the lesson");
       const info = (await res.json()) as SessionInfo;
       setSession(info);
-      setProgress({ objectives: info.lesson.objectives, outcome: null, summary: null, new_vocabulary: [] });
+      setProgress({ steps: info.lesson.steps, outcome: null, summary: null, new_vocabulary: [] });
       setPhase("live");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't start the lesson");
@@ -177,7 +177,7 @@ function LiveLesson({
   const { localParticipant, isMicrophoneEnabled } = useLocalParticipant();
   const elapsed = useElapsedSeconds();
   const [stuck, setStuck] = useState(false);
-  const cheer = useGoalCheer(progress.objectives);
+  const cheer = useGoalCheer(progress.steps);
 
   useEffect(() => {
     localParticipant.setMicrophoneEnabled(true).catch((err) => {
@@ -196,8 +196,8 @@ function LiveLesson({
     return () => clearTimeout(timer);
   }, [agent]);
 
-  const done = progress.objectives.filter((objective) => objective.done).length;
-  const total = progress.objectives.length;
+  const done = progress.steps.filter((step) => step.done).length;
+  const total = progress.steps.length;
   const status = agent ? STATUS[state] ?? "Lumi is here" : stuck ? "Lumi is taking a while…" : "Lumi is joining…";
   const minutes = Math.floor(elapsed / 60);
   const seconds = String(elapsed % 60).padStart(2, "0");
@@ -269,7 +269,7 @@ function LiveLesson({
           <span className="meter__track meter__track--thin" aria-hidden="true">
             <span className="meter__fill" style={{ "--to": total ? done / total : 0 } as CSSProperties} />
           </span>
-          <Goals objectives={progress.objectives} />
+          <Goals steps={progress.steps} />
         </section>
         <section className="panel panel--grow" aria-labelledby="talk-title">
           <h2 id="talk-title" className="section-title">
@@ -282,24 +282,24 @@ function LiveLesson({
   );
 }
 
-/** Briefly celebrate the most recently ticked objective. */
-function useGoalCheer(objectives: Objective[]): { key: string; text: string } | null {
-  const seen = useRef<Set<string> | null>(null);
+/** Briefly celebrate the most recently ticked step. */
+function useGoalCheer(steps: Step[]): { key: string; text: string } | null {
+  const seen = useRef<Set<number> | null>(null);
   const [cheer, setCheer] = useState<{ key: string; text: string } | null>(null);
 
   useEffect(() => {
-    const doneIds = objectives.filter((objective) => objective.done).map((objective) => objective.id);
+    const donePositions = steps.filter((step) => step.done).map((step) => step.position);
     if (seen.current === null) {
-      seen.current = new Set(doneIds);
+      seen.current = new Set(donePositions);
       return;
     }
-    const fresh = objectives.find((objective) => objective.done && !seen.current?.has(objective.id));
-    doneIds.forEach((id) => seen.current?.add(id));
+    const fresh = steps.find((step) => step.done && !seen.current?.has(step.position));
+    donePositions.forEach((position) => seen.current?.add(position));
     if (!fresh) return;
-    setCheer({ key: fresh.id, text: `Goal reached: ${fresh.text}` });
+    setCheer({ key: String(fresh.position), text: `Goal reached: ${fresh.task}` });
     const timer = setTimeout(() => setCheer(null), 3200);
     return () => clearTimeout(timer);
-  }, [objectives]);
+  }, [steps]);
 
   return cheer;
 }
@@ -350,9 +350,9 @@ function Transcript({ lang }: { lang: string }) {
 
 /** Post-lesson celebration with the summary and the new words. */
 function WrapUp({ progress }: { progress: Progress | null }) {
-  const objectives = progress?.objectives ?? [];
-  const done = objectives.filter((objective) => objective.done).length;
-  const allDone = objectives.length > 0 && done === objectives.length;
+  const steps = progress?.steps ?? [];
+  const done = steps.filter((step) => step.done).length;
+  const allDone = steps.length > 0 && done === steps.length;
   return (
     <div className="celebrate">
       <div className="celebrate__hero" data-win={done > 0}>
@@ -367,7 +367,7 @@ function WrapUp({ progress }: { progress: Progress | null }) {
         {allDone
           ? "You did it. Every goal ticked!"
           : done > 0
-            ? `Nice effort: ${done} of ${objectives.length} goals done.`
+            ? `Nice effort: ${done} of ${steps.length} goals done.`
             : "No problem, we'll pick it up next time."}
       </h1>
       <p className="lead">
@@ -390,12 +390,12 @@ function WrapUp({ progress }: { progress: Progress | null }) {
           </ul>
         </section>
       ) : null}
-      {objectives.length ? (
+      {steps.length ? (
         <section className="celebrate__block" aria-labelledby="goal-recap">
           <h2 id="goal-recap" className="section-title">
             Today's goals
           </h2>
-          <Goals objectives={objectives} />
+          <Goals steps={steps} />
         </section>
       ) : null}
       <a href="/wizard/preparing" className="btn btn--sun btn--lg">
