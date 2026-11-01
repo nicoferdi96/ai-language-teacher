@@ -1,24 +1,20 @@
 """FastAPI front door for voice lessons: fetch the lesson, mint a room token."""
 
 import logging
-import os
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import timedelta
-from pathlib import Path
 
 import httpx
-from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from livekit import api
 from pydantic import BaseModel, EmailStr
 
 from tutor.lesson import LessonPackage
-from tutor.planner_client import PlannerClient
-from tutor.worker import AGENT_NAME, PROGRESS_TOPIC
+from tutor.planner import PlannerClient
+from tutor.settings import settings
 
-load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 logger = logging.getLogger(__name__)
 
 planner = PlannerClient()
@@ -54,8 +50,13 @@ class RoomTokenIssuer:
     """Creates a unique room per lesson and a token that dispatches the tutor."""
 
     def __init__(self, api_key: str | None = None, api_secret: str | None = None):
-        self.api_key = api_key or os.environ["LIVEKIT_API_KEY"]
-        self.api_secret = api_secret or os.environ["LIVEKIT_API_SECRET"]
+        """Use the given LiveKit key pair, or the one from the settings; fail fast when any is missing."""
+        secret = settings.livekit_api_secret.get_secret_value() if settings.livekit_api_secret else None
+        self.api_key = api_key or settings.livekit_api_key
+        self.api_secret = api_secret or secret
+        self.server_url = settings.livekit_url
+        if not (self.server_url and self.api_key and self.api_secret):
+            raise RuntimeError("LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET must be set")
 
     def issue(self, package: LessonPackage) -> tuple[str, str]:
         """Return ``(room_name, jwt)``; the agent is dispatched on room creation."""
@@ -70,7 +71,7 @@ class RoomTokenIssuer:
                 api.RoomConfiguration(
                     agents=[
                         api.RoomAgentDispatch(
-                            agent_name=AGENT_NAME, metadata=package.model_dump_json()
+                            agent_name=settings.agent_name, metadata=package.model_dump_json()
                         )
                     ]
                 )
@@ -94,12 +95,13 @@ async def create_session(request: SessionRequest) -> SessionResponse:
     except httpx.HTTPError as error:
         logger.exception("Planner unavailable for %s", request.user_id)
         raise HTTPException(status_code=503, detail=f"Lesson planner unavailable: {error}")
-    room_name, token = RoomTokenIssuer().issue(package)
+    issuer = RoomTokenIssuer()
+    room_name, token = issuer.issue(package)
     logger.info("Lesson %s room %s for %s", package.lesson_uuid, room_name, request.user_id)
     return SessionResponse(
-        server_url=os.environ["LIVEKIT_URL"],
+        server_url=issuer.server_url,
         participant_token=token,
         room_name=room_name,
-        progress_topic=PROGRESS_TOPIC,
+        progress_topic=settings.progress_topic,
         lesson=package,
     )

@@ -2,7 +2,7 @@
 
 The numbers are unmute-core's "balanced" LiveKit pace (``unmute_core.turn.TURN_WINDOWS``),
 as its salon-concierge example applies them. Change them only with a measurement: the
-worker logs each turn's end-of-utterance delay (see ``tutor.session.log_turn_metrics``).
+worker logs each turn's end-of-utterance delay as ``turn:`` lines (see ``log_turn_metrics``).
 """
 
 import logging
@@ -12,11 +12,15 @@ from livekit.agents import (
     AgentSession,
     AgentStateChangedEvent,
     InterruptionOptions,
+    MetricsCollectedEvent,
     ToolExecutionUpdatedEvent,
     TurnHandlingOptions,
     UserStateChangedEvent,
     inference,
+    metrics,
+    stt,
 )
+from livekit.plugins import silero
 from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger(__name__)
@@ -45,6 +49,11 @@ to plain VAD under ``start``, which is what Compose runs. The boundary keeps a "
 over the tutor, so a short answer to its question is heard after the line, not lost."""
 
 
+def load_vad(window: TurnWindow = BALANCED) -> silero.VAD:
+    """Load Silero with the turn window's silence floor (once per worker process)."""
+    return silero.VAD.load(min_silence_duration=window.vad_silence)
+
+
 def turn_handling(window: TurnWindow = BALANCED) -> TurnHandlingOptions:
     """Return the session's turn handling: audio turn detector, endpointing, interruption."""
     return {
@@ -66,6 +75,7 @@ def yield_to_caller(session: AgentSession) -> None:
     tool_speech: dict[str, str] = {}
 
     def drop(why: str) -> None:
+        """Interrupt the current reply unless it is finished, protected or running a tool."""
         speech = session.current_speech
         if speech is None or speech.done() or speech.interrupted or not speech.allow_interruptions:
             return
@@ -75,14 +85,17 @@ def yield_to_caller(session: AgentSession) -> None:
         speech.interrupt()
 
     def on_user_state(event: UserStateChangedEvent) -> None:
+        """Drop the reply being prepared when the learner starts speaking again."""
         if event.new_state == "speaking" and session.agent_state == "thinking":
             drop("learner resumed while the tutor was thinking")
 
     def on_agent_state(event: AgentStateChangedEvent) -> None:
+        """Drop a reply whose turn was committed while the learner was still speaking."""
         if event.new_state == "thinking" and session.user_state == "speaking":
             drop("turn committed while the learner was speaking")
 
     def on_tool(event: ToolExecutionUpdatedEvent) -> None:
+        """Remember which reply runs which tool call, so those replies are never dropped."""
         update, speech = event.update, session.current_speech
         if update.type == "tool_call_started" and speech is not None:
             tool_speech[update.function_call.call_id] = speech.id
@@ -92,3 +105,47 @@ def yield_to_caller(session: AgentSession) -> None:
     session.on("user_state_changed", on_user_state)
     session.on("agent_state_changed", on_agent_state)
     session.on("tool_execution_updated", on_tool)
+
+
+def log_turn_metrics(session: AgentSession) -> None:
+    """Log the latency of each turn: end of utterance, LLM first token, TTS first audio."""
+
+    def on_metrics(event: MetricsCollectedEvent) -> None:
+        """Write one ``turn:`` log line per latency metric LiveKit reports."""
+        match event.metrics:
+            case metrics.EOUMetrics() as eou:
+                logger.info(
+                    "turn: end_of_utterance %.2fs, transcription %.2fs",
+                    eou.end_of_utterance_delay,
+                    eou.transcription_delay,
+                )
+            case metrics.LLMMetrics() as llm:
+                logger.info("turn: llm ttft %.2fs", llm.ttft)
+            case metrics.TTSMetrics() as tts:
+                logger.info("turn: tts ttfb %.2fs", tts.ttfb)
+
+    session.on("metrics_collected", on_metrics)
+
+
+class InterimJoiner:
+    """Turns Gradium's per-word interim transcripts into the text heard so far in the utterance.
+
+    Gradium sends each interim transcript with only its newest word and joins the words
+    only in the final one. LiveKit publishes every interim as the whole line, so without
+    this the learner's transcript bubble would show one word at a time.
+    """
+
+    def __init__(self) -> None:
+        """Start with an empty line."""
+        self._words: list[str] = []
+
+    def push(self, event: stt.SpeechEvent) -> stt.SpeechEvent:
+        """Return the event with cumulative interim text; a final event resets the line."""
+        if event.type == stt.SpeechEventType.FINAL_TRANSCRIPT:
+            self._words = []
+        elif event.type == stt.SpeechEventType.INTERIM_TRANSCRIPT and event.alternatives:
+            first = event.alternatives[0]
+            if word := first.text.strip():
+                self._words.append(word)
+            first.text = " ".join(self._words)
+        return event

@@ -1,8 +1,10 @@
-"""Lesson models: the planner's package, the running lesson state and what it reports."""
+"""Lesson models: the planner's package, the running lesson state, what it reports, and its timer."""
 
+import asyncio
 import time
 from typing import Literal
 
+from livekit.agents import AgentSession
 from pydantic import BaseModel, Field
 
 
@@ -200,3 +202,47 @@ class LessonState(BaseModel):
         """The planner body that records the outcome."""
         assert self.outcome is not None, "finish() must run first"
         return FinishLessonRequest(status=self.outcome, summary=self.summary, new_vocabulary=self.new_vocabulary)
+
+
+class LessonTimer:
+    """Code-owned lesson clock: tells the tutor when to wrap up and when to stop."""
+
+    WRAP_UP_AT = 0.85
+    """Share of the planned duration after which the tutor starts the recap."""
+    FORCE_CLOSE_AT = 1.2
+    """Share of the planned duration after which the tutor must close the lesson."""
+
+    def __init__(self, session: AgentSession, state: LessonState):
+        """Prepare a timer for this session and lesson; ``start`` runs it."""
+        self.session = session
+        self.state = state
+        self._task: asyncio.Task[None] | None = None
+
+    def start(self) -> "LessonTimer":
+        """Start the clock in the background and return the timer."""
+        self._task = asyncio.create_task(self._run())
+        return self
+
+    def cancel(self) -> None:
+        """Stop the clock, for example when the session closes."""
+        if self._task is not None:
+            self._task.cancel()
+
+    async def _run(self) -> None:
+        """Nudge at 85% of the lesson and force the close at 120%."""
+        duration_s = self.state.package.duration_minutes * 60
+        await asyncio.sleep(duration_s * self.WRAP_UP_AT)
+        self._nudge(
+            "Time is almost up. Start the wrap-up now: a 2-sentence recap, "
+            "call complete_lesson, then say goodbye and call end_call."
+        )
+        await asyncio.sleep(duration_s * (self.FORCE_CLOSE_AT - self.WRAP_UP_AT))
+        self._nudge(
+            "The lesson time is over. Call complete_lesson now, say goodbye "
+            "in one sentence and call end_call."
+        )
+
+    def _nudge(self, instructions: str) -> None:
+        """Ask the tutor for a reply with these instructions, unless the lesson already ended."""
+        if self.state.outcome is None:
+            self.session.generate_reply(instructions=instructions)

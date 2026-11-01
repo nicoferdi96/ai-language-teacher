@@ -4,13 +4,12 @@ LiveKit Agents already writes the GenAI conventions (``job_entrypoint`` > ``agen
 ``agent_turn`` > ``llm_request`` with the prompt, tools and tokens, ``function_tool``, speech
 spans), so this module only routes them to Langfuse, stamps the lesson on each, and keeps the
 spans around a model request from being priced. Without ``LANGFUSE_PUBLIC_KEY`` and
-``LANGFUSE_SECRET_KEY`` nothing is set up and the tutor runs the same.
+``LANGFUSE_SECRET_KEY`` (see ``tutor.settings``) nothing is set up and the tutor runs the same.
 """
 
 import asyncio
 import base64
 import logging
-import os
 from collections.abc import Sequence
 from functools import lru_cache
 
@@ -27,12 +26,12 @@ from opentelemetry.util.types import AttributeValue
 from pydantic import ValidationError
 
 from tutor.lesson import LessonPackage
+from tutor.settings import settings
 
 logger = logging.getLogger(__name__)
 
 TRACE_NAME = "voice-lesson"
 LIVEKIT_SCOPE = "livekit-agents"
-DEFAULT_BASE_URL = "https://cloud.langfuse.com"
 FLUSH_TIMEOUT_S = 5.0
 WRAPPER_SPANS = frozenset({"llm_node", "llm_request_run"})
 """LiveKit spans around one ``llm_request``. They carry the model name, and Langfuse prices any
@@ -105,6 +104,7 @@ class LangfuseExporter(SpanExporter):
     """Langfuse's OTLP endpoint on the v4 ingestion path, with wrapper spans left unpriced."""
 
     def __init__(self, public_key: str, secret_key: str, base_url: str):
+        """Build the OTLP exporter with Basic auth and the v4 ingestion header."""
         auth = base64.b64encode(f"{public_key}:{secret_key}".encode()).decode()
         self.otlp = OTLPSpanExporter(
             endpoint=f"{base_url.rstrip('/')}/api/public/otel/v1/traces",
@@ -133,10 +133,10 @@ def should_export(span: ReadableSpan) -> bool:
 
 def setup_tracing() -> TracerProvider | None:
     """Send this process's LiveKit spans to Langfuse when its keys are set; return the provider."""
-    public_key, secret_key = os.getenv("LANGFUSE_PUBLIC_KEY"), os.getenv("LANGFUSE_SECRET_KEY")
-    if not (public_key and secret_key):
+    if settings.langfuse_public_key is None or settings.langfuse_secret_key is None:
         return None
-    base_url = os.getenv("LANGFUSE_BASE_URL") or os.getenv("LANGFUSE_HOST") or DEFAULT_BASE_URL
+    public_key, secret_key = settings.langfuse_public_key, settings.langfuse_secret_key.get_secret_value()
+    base_url = settings.langfuse_base_url
     provider = TracerProvider(resource=Resource.create({SERVICE_NAME: "voice-tutor"}))
     provider.add_span_processor(LessonStamp())
     Langfuse(
@@ -151,7 +151,9 @@ def setup_tracing() -> TracerProvider | None:
     return provider
 
 
-async def flush_tracing(provider: TracerProvider) -> None:
-    """Send the lesson's buffered spans, without blocking the event loop."""
+async def flush_tracing(provider: TracerProvider | None) -> None:
+    """Send the lesson's buffered spans, without blocking the event loop; no-op when tracing is off."""
+    if provider is None:
+        return
     if not await asyncio.to_thread(provider.force_flush, int(FLUSH_TIMEOUT_S * 1000)):
         logger.warning("Langfuse did not flush within %.0f s; some lesson spans may be lost", FLUSH_TIMEOUT_S)

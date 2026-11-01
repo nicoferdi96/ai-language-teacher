@@ -6,8 +6,7 @@ import pytest
 from livekit.agents import AgentStateChangedEvent, UserStateChangedEvent, inference, stt
 from pydantic import ValidationError
 
-from tutor.transcript import InterimJoiner
-from tutor.turn import BALANCED, TurnWindow, turn_handling, yield_to_caller
+from tutor.turn import BALANCED, InterimJoiner, TurnWindow, turn_handling, yield_to_caller
 
 
 def test_turn_handling_uses_unmute_balanced_pace():

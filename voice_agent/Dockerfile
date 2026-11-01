@@ -23,9 +23,9 @@ ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1
 
 # Bake the VAD and turn-detector model weights into the image.
-RUN python -m tutor.worker download-files
+RUN python agent.py download-files
 
 EXPOSE 8100
 
 # Default: the LiveKit worker. The API service overrides the command in compose.
-CMD ["python", "-m", "tutor.worker", "start"]
+CMD ["python", "agent.py", "start"]
