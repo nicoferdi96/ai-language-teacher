@@ -297,3 +297,17 @@ def test_trace_is_flushed_when_the_job_root_ends_and_not_before():
     assert not provider.flushed.wait(0.2)
     root.end()
     assert provider.flushed.wait(2)
+
+
+def test_only_the_job_root_stays_the_trace_root():
+    marker = {"langfuse.internal.is_app_root": True}
+    assert "langfuse.internal.is_app_root" not in rewrite(finished_span("on_enter", marker)).attributes
+    assert rewrite(finished_span("job_entrypoint", marker)).attributes["langfuse.internal.is_app_root"] is True
+
+
+def test_agent_activity_keeps_its_type_but_not_the_model():
+    span = finished_span("start_agent_activity", {"gen_ai.request.model": "claude-haiku-5-5", "gen_ai.operation.name": "create_agent"})
+    attributes = rewrite(span).attributes
+    assert "gen_ai.request.model" not in attributes
+    assert attributes["gen_ai.operation.name"] == "create_agent"
+    assert "langfuse.observation.type" not in attributes
