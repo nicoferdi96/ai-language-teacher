@@ -35,7 +35,7 @@ from tutor.prompt import TutorPrompt
 from tutor.settings import settings
 from tutor.steps import LessonSteps, LessonTimeUp
 from tutor.store import LessonNotFoundError, LessonStore
-from tutor.telemetry import flush_tracing, record_stt_usage, setup_tracing
+from tutor.telemetry import flush_tracing, record_lesson_outcome, record_stt_usage, setup_tracing
 from tutor.turn import BALANCED, load_vad, log_turn_metrics, turn_handling, yield_to_caller
 
 logger = logging.getLogger("tutor")
@@ -230,21 +230,23 @@ async def lesson_entrypoint(ctx: JobContext) -> None:
     recorder = LessonRecorder(state, PlannerClient(), ctx.room)
     tutor = Lumi(state, recorder)
     session = build_session(tutor.language, ctx.proc.userdata["vad"])
+    tracer_provider = ctx.proc.userdata.get("tracer_provider")
 
     try:
         await asyncio.wait_for(ctx.wait_for_participant(), timeout=settings.learner_join_timeout_s)
     except asyncio.TimeoutError:
         logger.warning("Learner never joined lesson %s; leaving", plan.lesson_uuid)
         await recorder.aclose()
+        record_lesson_outcome(tracer_provider, state, "learner never joined")
         ctx.shutdown(reason="learner never joined")
         return
 
-    async def on_shutdown() -> None:
-        """Record the lesson as abandoned or completed if it is still open, then its STT usage, then flush traces."""
+    async def on_shutdown(reason: str) -> None:
+        """Record the lesson as abandoned or completed if still open, then its STT usage and outcome, then flush traces."""
         await tutor.finalize()
         await recorder.aclose()
-        tracer_provider = ctx.proc.userdata.get("tracer_provider")
         record_stt_usage(tracer_provider, session.usage)
+        record_lesson_outcome(tracer_provider, state, reason)
         await flush_tracing(tracer_provider)
 
     ctx.add_shutdown_callback(on_shutdown)

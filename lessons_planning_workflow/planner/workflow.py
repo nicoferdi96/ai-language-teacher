@@ -10,7 +10,7 @@ from langfuse import get_client, observe, propagate_attributes
 from planner.agents import CurriculumAgent, LessonAgent
 from planner.models import LessonPackage, LessonRecord, ProgressSnapshot
 from planner.repository import LearnerRepository
-from planner.tracing import TRACE_NAME
+from planner.tracing import TRACE_NAME, tag_lesson_session
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +98,7 @@ class LessonPlanningWorkflow:
             level=plan.level,
             unit=unit,
         )
+        tag_lesson_session(str(lesson.lesson_uuid))
         get_client().update_current_span(
             output={
                 "lesson_uuid": str(lesson.lesson_uuid),
@@ -117,7 +118,7 @@ class LessonPlanningWorkflow:
         """Run the full workflow for a learner and return the lesson package.
 
         A per-learner lock keeps concurrent requests from creating two lessons. The run is
-        one Langfuse trace, tagged with the learner's id.
+        one Langfuse trace, tagged with the learner's id and filed in the lesson's session.
         """
         with (
             get_client().start_as_current_observation(
@@ -132,6 +133,7 @@ class LessonPlanningWorkflow:
                     stream=False,
                 )
             package = LessonPackage.model_validate(result.content)
+            tag_lesson_session(str(package.lesson.lesson_uuid))
             root.update(
                 output={
                     "lesson_uuid": str(package.lesson.lesson_uuid),

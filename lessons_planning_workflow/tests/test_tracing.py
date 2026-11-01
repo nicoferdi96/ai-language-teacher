@@ -7,6 +7,9 @@ from agno.metrics import RunMetrics
 from agno.models.message import Message
 from agno.run.agent import RunOutput
 from agno.run.base import RunStatus
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from planner import tracing
 from planner.agents import CurriculumAgent, planner_model
@@ -75,3 +78,13 @@ async def test_agent_observation_carries_no_model_so_only_the_sdk_generation_is_
     assert "model" not in client.opened
     assert client.opened["metadata"] == {"model": "claude-haiku-5-5", "output_schema": "LearningPlanDraft"}
     assert client.updates["output"] == {"level": "A1"}
+
+
+def test_lesson_session_is_set_on_the_current_observation():
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    with provider.get_tracer("test").start_as_current_span("prepare-lesson"):
+        tracing.tag_lesson_session("00000000-0000-0000-0000-000000000003")
+    [span] = exporter.get_finished_spans()
+    assert span.attributes["session.id"] == "00000000-0000-0000-0000-000000000003"

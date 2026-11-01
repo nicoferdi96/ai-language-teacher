@@ -15,6 +15,7 @@ from agno.agent import Agent
 from agno.run.agent import RunOutput
 from agno.run.base import RunStatus
 from langfuse import Langfuse, get_client
+from opentelemetry import trace
 
 TRACE_NAME = "lesson-planning"
 INGESTION_V4 = {"x-langfuse-ingestion-version": "4"}
@@ -27,6 +28,15 @@ def setup_tracing() -> None:
     """Start the Langfuse client when its keys are set."""
     if os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY"):
         Langfuse(additional_headers=INGESTION_V4)
+
+
+def tag_lesson_session(lesson_uuid: str) -> None:
+    """Put the current observation in the lesson's Langfuse session, the one the voice lesson uses.
+
+    The lesson uuid is only known once the lesson is prepared, so ``propagate_attributes`` cannot
+    reach the observations that already ended; the step and the run's root carry it instead.
+    """
+    trace.get_current_span().set_attribute("session.id", lesson_uuid)
 
 
 def run_details(response: RunOutput) -> dict[str, Any]:
